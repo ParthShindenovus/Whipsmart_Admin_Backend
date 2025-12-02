@@ -20,9 +20,11 @@ class DjangoSessionManager:
         """
         Get existing session or create AgentState from Django Session.
         Loads messages from ChatMessage model.
+        session_id is the UUID id (primary key) of the Session.
         """
         try:
-            session = Session.objects.get(session_id=session_id, is_active=True)
+            # session_id is now the id (UUID primary key)
+            session = Session.objects.get(id=session_id, is_active=True)
             
             # Load messages from database
             messages = []
@@ -37,9 +39,9 @@ class DjangoSessionManager:
                     "content": msg.message
                 })
             
-            # Create AgentState
+            # Create AgentState (use session.id as session_id for consistency)
             state = AgentState(
-                session_id=session_id,
+                session_id=str(session.id),
                 messages=messages,
                 tool_result=None,
                 next_action=None,
@@ -58,9 +60,11 @@ class DjangoSessionManager:
         """
         Save agent state to Django models.
         Updates messages in ChatMessage model.
+        session_id is the UUID id (primary key) of the Session.
         """
         try:
-            session = Session.objects.get(session_id=session_id)
+            # session_id is now the id (UUID primary key)
+            session = Session.objects.get(id=session_id)
             
             # Find the last assistant message in state.messages
             last_assistant_message = None
@@ -106,9 +110,13 @@ class DjangoSessionManager:
             raise
     
     def save_user_message(self, session_id: str, message: str):
-        """Save user message to database"""
+        """
+        Save user message to database.
+        session_id is the UUID id (primary key) of the Session.
+        """
         try:
-            session = Session.objects.get(session_id=session_id)
+            # session_id is now the id (UUID primary key)
+            session = Session.objects.get(id=session_id)
             ChatMessage.objects.create(
                 session=session,
                 message=message,

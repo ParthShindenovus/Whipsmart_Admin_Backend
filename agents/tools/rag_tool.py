@@ -109,13 +109,25 @@ def rag_tool_node(state, top_k: int = 5) -> AgentState:
                     except Exception as e:
                         logger.warning(f"  [{i}] Error fetching chunk from DB: {str(e)[:100]}, using metadata")
                 
+                # Only include URL if document type is 'url', not for file-based documents
+                file_type = metadata.get("file_type", "")
+                url_value = ""
+                
+                if file_type == "url":
+                    # For URL documents, include the URL
+                    url_value = metadata.get("url") or ""
+                
+                # For file-based documents (pdf, docx, txt, html), don't include URL
+                # Only URL documents should have URLs in the response
+                
                 doc = {
                     "text": full_text,  # Use full text from DB or metadata
-                    "url": metadata.get("url") or metadata.get("source", "") or metadata.get("file_url", ""),
+                    "url": url_value,  # Only URLs for URL document type
                     "score": float(match.score) if hasattr(match, 'score') else 0.0,
                     "chunk_index": chunk_index,
                     "document_id": document_id,
-                    "document_title": metadata.get("document_title", "")
+                    "document_title": metadata.get("document_title", ""),
+                    "file_type": file_type  # Include file type for reference
                 }
                 docs.append(doc)
                 

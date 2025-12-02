@@ -3,6 +3,19 @@ from .models import Document, DocumentChunk
 from core.serializers import AdminUserSerializer
 
 
+class ExtractFromURLSerializer(serializers.Serializer):
+    """Serializer for extract-from-url endpoint."""
+    url = serializers.URLField(
+        required=True,
+        help_text="URL to extract content from"
+    )
+    title = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="Optional document title (auto-extracted from page if not provided)"
+    )
+
+
 class DocumentChunkSerializer(serializers.ModelSerializer):
     """Serializer for DocumentChunk model."""
     

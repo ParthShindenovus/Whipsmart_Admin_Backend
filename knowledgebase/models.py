@@ -13,6 +13,7 @@ class Document(models.Model):
         ('txt', 'Text'),
         ('docx', 'Word Document'),
         ('html', 'HTML'),
+        ('url', 'URL'),
     ]
     
     STATE_CHOICES = [

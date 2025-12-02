@@ -263,26 +263,67 @@ def final_node(state) -> AgentState:
             for msg in recent_messages
         ])
 
+        # Check if we have no results or low-relevance results
+        has_relevant_results = False
+        if isinstance(state.tool_result, dict):
+            action = state.tool_result.get('action')
+            
+            if action == 'rag':
+                results = state.tool_result.get('results', [])
+                results_count = len(results)
+                
+                # Check if results are empty or have very low scores
+                if results_count == 0:
+                    logger.info(f"[WARN]  No RAG results found for query")
+                    has_relevant_results = False
+                else:
+                    # Check if any result has a reasonable relevance score (> 0.5)
+                    max_score = max([r.get('score', 0.0) for r in results if isinstance(r, dict)], default=0.0)
+                    logger.info(f"[DOCS] RAG Results: {results_count} documents found, max score: {max_score:.4f}")
+                    has_relevant_results = max_score > 0.5
+                    
+                    if not has_relevant_results:
+                        logger.info(f"[WARN]  RAG results have low relevance scores (< 0.5)")
+                        
+            elif action == 'car':
+                results_count = len(state.tool_result.get('results', []))
+                logger.info(f"[CAR] Car Results: {results_count} cars found")
+                has_relevant_results = results_count > 0
+        
         # Format tool result for synthesis
         tool_result_str = json.dumps(state.tool_result, indent=2, ensure_ascii=False)
         
-        logger.info(f"[TOOL] Tool Result Type: {state.tool_result.get('action') if isinstance(state.tool_result, dict) else 'N/A'}")
-        if isinstance(state.tool_result, dict):
-            if state.tool_result.get('action') == 'rag':
-                results_count = len(state.tool_result.get('results', []))
-                logger.info(f"[DOCS] RAG Results: {results_count} documents found")
-            elif state.tool_result.get('action') == 'car':
-                results_count = len(state.tool_result.get('results', []))
-                logger.info(f"[CAR] Car Results: {results_count} cars found")
-        
         logger.info("[PROC]  Generating final synthesized answer...")
 
-        # Create synthesis prompt
+        # Create synthesis prompt with enhanced instructions for no-answer scenarios
         synthesis_prompt = FINAL_SYNTHESIS_PROMPT.format(
             tool_result=tool_result_str,
             conversation_context=conversation_context,
             user_question=user_question
         )
+        
+        # If no relevant results found, enhance the prompt with specific instructions
+        if not has_relevant_results and isinstance(state.tool_result, dict) and state.tool_result.get('action') == 'rag':
+            synthesis_prompt += """
+            
+CRITICAL: The search found NO relevant results or only results with very low relevance scores (< 0.5).
+This means we do NOT have information about the user's question in our knowledge base.
+
+You MUST:
+1. Politely tell the user: "I don't have specific information about that topic in my knowledge base."
+2. Suggest what topics we CAN help with. Here are examples:
+   - Electric vehicle leasing options and processes
+   - Novated leases and how they work
+   - Tax implications and benefits of leasing
+   - Vehicle selection and availability
+   - Leasing terms, conditions, and policies
+   - Pricing and payment options
+   - EV charging and infrastructure
+   - WhipSmart services and policies
+3. Be friendly and encourage them to ask about topics we can help with
+
+Do NOT try to answer the question anyway - only suggest what we CAN help with.
+"""
 
         response = client.chat.completions.create(
             model=model,

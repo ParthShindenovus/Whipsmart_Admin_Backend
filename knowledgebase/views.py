@@ -13,9 +13,10 @@ import logging
 
 logger = logging.getLogger(__name__)
 from .models import Document, DocumentChunk
-from .serializers import DocumentSerializer
+from .serializers import DocumentSerializer, ExtractFromURLSerializer
 from .services.vectorization_service import vectorize_document, delete_document_vectors, search_documents
 from .services.document_processor import process_document
+from .services.url_extractor import extract_content_from_url, validate_url
 from core.views_base import StandardizedResponseMixin
 from core.utils import success_response, error_response
 
@@ -469,6 +470,88 @@ class DocumentViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
         except Exception as e:
             logger.error(f"Error viewing document {document.id}: {str(e)}")
             raise Http404("Error accessing file")
+    
+    @extend_schema(
+        summary="Extract content from URL",
+        description="Extract content from a URL and create a new document. The URL will be processed, chunked, and can be vectorized. Requires authentication.",
+        request=ExtractFromURLSerializer,
+        responses={
+            201: {
+                'type': 'object',
+                'properties': {
+                    'success': {'type': 'boolean', 'example': True},
+                    'document_id': {'type': 'string', 'format': 'uuid', 'example': '123e4567-e89b-12d3-a456-426614174000'},
+                    'title': {'type': 'string', 'example': 'Example Article Title'},
+                    'chunks_created': {'type': 'integer', 'example': 15},
+                    'message': {'type': 'string', 'example': 'Successfully extracted content from URL. 15 chunks created.'},
+                }
+            },
+            400: {
+                'type': 'object',
+                'properties': {
+                    'success': {'type': 'boolean', 'example': False},
+                    'message': {'type': 'string', 'example': 'URL is required'},
+                }
+            }
+        },
+        tags=['Documents'],
+    )
+    @action(detail=False, methods=['post'], url_path='extract-from-url')
+    def extract_from_url(self, request):
+        """Extract content from a URL and create a document."""
+        serializer = ExtractFromURLSerializer(data=request.data)
+        if not serializer.is_valid():
+            return error_response(
+                message='Invalid request data',
+                errors=serializer.errors,
+                status_code=status.HTTP_400_BAD_REQUEST
+            )
+        
+        url = serializer.validated_data['url']
+        title = serializer.validated_data.get('title', '').strip()
+        
+        try:
+            # Extract content from URL
+            text, extracted_title = extract_content_from_url(url)
+            
+            if not text:
+                return error_response('Could not extract content from URL. The URL may be inaccessible or contain no text content.', status_code=status.HTTP_400_BAD_REQUEST)
+            
+            # Use extracted title if provided and title is empty
+            if not title:
+                title = extracted_title or url
+            
+            # Create document
+            document = Document.objects.create(
+                title=title,
+                file_url=url,
+                file_type='url',
+                uploaded_by=request.user,
+                state='uploaded'
+            )
+            
+            # Process and chunk the document
+            processed_chunks = process_document(
+                file_url=url,
+                file_type='url',
+                document_id=str(document.id),
+                title=title,
+                save_to_db=True
+            )
+            
+            if not processed_chunks:
+                return error_response('Document created but no chunks were generated', status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            
+            return success_response({
+                'document_id': str(document.id),
+                'title': document.title,
+                'chunks_created': len(processed_chunks),
+                'message': f'Successfully extracted content from URL. {len(processed_chunks)} chunks created.'
+            }, status_code=status.HTTP_201_CREATED)
+            
+        except Exception as e:
+            logger.error(f"Error extracting content from URL {url}: {str(e)}", exc_info=True)
+            return error_response(f'Error extracting content from URL: {str(e)}', status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     @extend_schema(
         summary="Search documents using RAG",

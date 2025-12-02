@@ -4,7 +4,7 @@ Supports local media folder and cloud storage (S3/Azure Blob ready).
 """
 import os
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 import PyPDF2
 from docx import Document as DocxDocument
 from django.conf import settings
@@ -231,8 +231,8 @@ def process_document(file_url: str, file_type: str, document_id: str, title: str
     Stores document_id in metadata for easy deletion.
     
     Args:
-        file_url: URL to the file (local media URL or cloud storage URL)
-        file_type: Type of file
+        file_url: URL to the file (local media URL or cloud storage URL) or web URL
+        file_type: Type of file (pdf, txt, docx, html, url)
         document_id: UUID of the document (stored in metadata)
         title: Document title
         save_to_db: Whether to save chunks to database (default: True)
@@ -243,6 +243,10 @@ def process_document(file_url: str, file_type: str, document_id: str, title: str
     from urllib.parse import urlparse
     from knowledgebase.models import Document, DocumentChunk
     from django.utils import timezone
+    
+    # Handle URL type documents differently
+    if file_type == 'url':
+        return process_url_document(file_url, document_id, title, save_to_db)
     
     # Get file path (handles both local and cloud storage)
     file_path = get_file_path_from_url(file_url)
@@ -318,3 +322,152 @@ def process_document(file_url: str, file_type: str, document_id: str, title: str
                 file_path.unlink()
             except Exception as e:
                 logger.warning(f"Error deleting temp file {file_path}: {str(e)}")
+
+
+def chunk_by_headings(structured_content: List[Dict], max_chunk_size: int = 1000) -> List[Dict]:
+    """
+    Chunk structured content by headings and topics.
+    Each chunk represents a complete topic/section with its heading hierarchy.
+    
+    Args:
+        structured_content: List of dicts with 'heading', 'level', 'main_heading', 'content' keys
+        max_chunk_size: Maximum size of each chunk in characters
+        
+    Returns:
+        List of dicts with 'heading', 'level', 'main_heading', 'content', 'chunk_text' keys
+    """
+    chunks = []
+    
+    for section in structured_content:
+        heading = section.get('heading', '')
+        main_heading = section.get('main_heading', '') or heading
+        level = section.get('level', 0)
+        content = section.get('content', '').strip()
+        
+        if not content or len(content) < 10:  # Skip very short or empty content
+            continue
+        
+        # Create chunk text with heading prefix for better context
+        if heading:
+            section_text = f"{heading}\n\n{content}"
+        else:
+            section_text = content
+        
+        # If chunk is too large, split it further using sentence-based chunking
+        if len(section_text) > max_chunk_size:
+            # Split large sections into smaller chunks while preserving heading context
+            sub_chunks = chunk_text(section_text, chunk_size=max_chunk_size, overlap=50)
+            
+            for idx, sub_chunk in enumerate(sub_chunks):
+                # Preserve heading context in each sub-chunk
+                if heading and idx > 0:
+                    sub_chunk = f"{heading}\n\n{sub_chunk}"
+                
+                chunks.append({
+                    'heading': heading,
+                    'main_heading': main_heading,
+                    'level': level,
+                    'content': content if idx == 0 else '',  # Only full content for first chunk
+                    'chunk_text': sub_chunk
+                })
+        else:
+            chunks.append({
+                'heading': heading,
+                'main_heading': main_heading,
+                'level': level,
+                'content': content,
+                'chunk_text': section_text
+            })
+    
+    return chunks
+
+
+def process_url_document(url: str, document_id: str, title: str, save_to_db: bool = True) -> List[Tuple[str, str, dict]]:
+    """
+    Process a URL document: extract content with structure, chunk by headings/topics, and optionally store chunks in DB.
+    
+    Args:
+        url: URL to extract content from
+        document_id: UUID of the document (stored in metadata)
+        title: Document title
+        save_to_db: Whether to save chunks to database (default: True)
+        
+    Returns:
+        List of tuples: (chunk_text, chunk_id, metadata)
+    """
+    from knowledgebase.models import Document, DocumentChunk
+    from knowledgebase.services.url_extractor import extract_content_with_structure
+    
+    try:
+        # Extract structured content from URL (with headings and sections)
+        structured_content, extracted_title = extract_content_with_structure(url)
+        
+        if not structured_content:
+            logger.warning(f"No structured content extracted from URL: {url}")
+            return []
+        
+        # Use extracted title if provided and title is empty/not provided
+        if not title or title == url:
+            title = extracted_title or url
+        
+        # Chunk by headings and topics
+        heading_chunks = chunk_by_headings(structured_content, max_chunk_size=1000)
+        logger.info(f"Created {len(heading_chunks)} topic-based chunks from URL: {url}")
+        
+        # Get document instance if saving to DB
+        document = None
+        if save_to_db:
+            try:
+                document = Document.objects.get(id=document_id)
+            except Document.DoesNotExist:
+                logger.warning(f"Document {document_id} not found, skipping DB save")
+                save_to_db = False
+        
+        # Prepare chunks with metadata (including document_id for easy deletion)
+        processed_chunks = []
+        for idx, heading_chunk in enumerate(heading_chunks):
+            chunk_id = f"{document_id}-chunk-{idx}"
+            chunk_text = heading_chunk['chunk_text']
+            heading = heading_chunk.get('heading')
+            main_heading = heading_chunk.get('main_heading', heading)
+            level = heading_chunk.get('level', 0)
+            
+            metadata = {
+                "text": chunk_text[:2000],  # Limit metadata text length (Pinecone limit)
+                "source": "whipsmart",
+                "document_id": str(document_id),  # CRITICAL: Store document_id for easy deletion
+                "document_title": title,
+                "chunk_index": idx,
+                "file_type": "url",
+                "url": url,  # Store the original URL
+                "heading": heading,  # Store full heading path for context
+                "main_heading": main_heading,  # Store main heading for quick reference
+                "heading_level": level  # Store heading level
+            }
+            processed_chunks.append((chunk_text, chunk_id, metadata))
+            
+            # Save chunk to database if requested
+            if save_to_db and document:
+                DocumentChunk.objects.update_or_create(
+                    document=document,
+                    chunk_id=chunk_id,
+                    defaults={
+                        'chunk_index': idx,
+                        'text': chunk_text,
+                        'text_length': len(chunk_text),
+                        'metadata': metadata,
+                    }
+                )
+        
+        # Update document state and chunk count
+        if save_to_db and document:
+            document.chunk_count = len(heading_chunks)
+            document.state = 'chunked'
+            document.save(update_fields=['chunk_count', 'state'])
+            logger.info(f"Saved {len(heading_chunks)} topic-based chunks to database for document {document_id}")
+        
+        return processed_chunks
+    
+    except Exception as e:
+        logger.error(f"Error processing URL document {url}: {str(e)}", exc_info=True)
+        raise

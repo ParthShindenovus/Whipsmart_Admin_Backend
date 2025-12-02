@@ -5,9 +5,9 @@ from .models import Session, ChatMessage
 @admin.register(Session)
 class SessionAdmin(admin.ModelAdmin):
     """Admin interface for Session model."""
-    list_display = ['session_id', 'external_user_id', 'is_active', 'expires_at', 'created_at', 'is_expired']
+    list_display = ['id', 'external_user_id', 'is_active', 'expires_at', 'created_at', 'is_expired']
     list_filter = ['is_active', 'expires_at', 'created_at']
-    search_fields = ['session_id', 'external_user_id']
+    search_fields = ['id', 'external_user_id']
     readonly_fields = ['id', 'created_at']
     date_hierarchy = 'created_at'
     
@@ -22,7 +22,7 @@ class ChatMessageAdmin(admin.ModelAdmin):
     """Admin interface for ChatMessage model."""
     list_display = ['id', 'session', 'role', 'message_preview', 'is_deleted', 'timestamp']
     list_filter = ['role', 'is_deleted', 'timestamp']
-    search_fields = ['message', 'session__session_id']
+    search_fields = ['message', 'session__id']
     readonly_fields = ['id', 'timestamp']
     date_hierarchy = 'timestamp'
     raw_id_fields = ['session']
