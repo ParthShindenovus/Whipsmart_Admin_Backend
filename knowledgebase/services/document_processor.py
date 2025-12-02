@@ -14,19 +14,93 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def chunk_text(text: str, chunk_size: int = 1200, overlap: int = 200) -> List[str]:
+def dynamic_chunking(text: str, max_chunk_size: int = 500, overlap: int = 50) -> List[str]:
     """
-    Simple chunker by characters with overlap.
-    Matches reference implementation from upload_to_pinecone.py
-    For production, consider using token-aware chunking (tiktoken).
+    Dynamic chunking using spaCy for sentence-aware chunking.
+    Creates smaller, semantically coherent chunks that respect sentence boundaries.
     
     Args:
         text: Text to chunk
-        chunk_size: Size of each chunk in characters
-        overlap: Number of characters to overlap between chunks
+        max_chunk_size: Maximum size of each chunk in characters
+        overlap: Number of characters to overlap between chunks (approximate)
         
     Returns:
         List of text chunks
+    """
+    try:
+        import spacy
+    except ImportError:
+        logger.warning("spaCy not installed. Falling back to simple character-based chunking. Install with: python -m spacy download en_core_web_sm")
+        return _simple_chunking(text, max_chunk_size, overlap)
+    
+    # Try to load spaCy model, fallback to simple chunking if not available
+    try:
+        nlp = spacy.load('en_core_web_sm')
+    except OSError:
+        logger.warning("spaCy model 'en_core_web_sm' not found. Falling back to simple chunking. Install with: python -m spacy download en_core_web_sm")
+        return _simple_chunking(text, max_chunk_size, overlap)
+    
+    if not text or len(text.strip()) == 0:
+        return []
+    
+    if len(text) <= max_chunk_size:
+        return [text]
+    
+    doc = nlp(text)
+    chunks = []
+    current_chunk = []
+    current_size = 0
+    
+    for sent in doc.sents:
+        sent_text = sent.text.strip()
+        sent_length = len(sent_text)
+        
+        # If a single sentence is larger than max_chunk_size, split it
+        if sent_length > max_chunk_size:
+            # Save current chunk if it has content
+            if current_chunk:
+                chunks.append(" ".join(current_chunk))
+                current_chunk = []
+                current_size = 0
+            
+            # Split the long sentence using simple chunking
+            sentence_chunks = _simple_chunking(sent_text, max_chunk_size, overlap)
+            chunks.extend(sentence_chunks)
+            continue
+        
+        # Check if adding this sentence would exceed max_chunk_size
+        if current_size + sent_length + 1 > max_chunk_size:  # +1 for space
+            if current_chunk:
+                chunks.append(" ".join(current_chunk))
+            
+            # Start new chunk with overlap (include last sentence of previous chunk)
+            if chunks and overlap > 0:
+                # Get last chunk for overlap
+                last_chunk = chunks[-1]
+                overlap_text = last_chunk[-overlap:] if len(last_chunk) > overlap else last_chunk
+                current_chunk = [overlap_text, sent_text]
+                current_size = len(overlap_text) + sent_length + 1
+            else:
+                current_chunk = [sent_text]
+                current_size = sent_length
+        else:
+            current_chunk.append(sent_text)
+            current_size += sent_length + 1  # +1 for space
+    
+    # Add remaining chunk
+    if current_chunk:
+        chunks.append(" ".join(current_chunk))
+    
+    # Clean up chunks (remove empty ones)
+    chunks = [chunk.strip() for chunk in chunks if chunk.strip()]
+    
+    return chunks if chunks else [text]
+
+
+def _simple_chunking(text: str, chunk_size: int, overlap: int) -> List[str]:
+    """
+    Simple character-based chunking fallback.
+    Used when spaCy is not available.
     """
     if len(text) <= chunk_size:
         return [text]
@@ -41,6 +115,22 @@ def chunk_text(text: str, chunk_size: int = 1200, overlap: int = 200) -> List[st
             break
     
     return chunks
+
+
+def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> List[str]:
+    """
+    Wrapper for backward compatibility.
+    Uses dynamic chunking with smaller default chunk size.
+    
+    Args:
+        text: Text to chunk
+        chunk_size: Maximum size of each chunk in characters (default: 500)
+        overlap: Number of characters to overlap (default: 50)
+        
+    Returns:
+        List of text chunks
+    """
+    return dynamic_chunking(text, max_chunk_size=chunk_size, overlap=overlap)
 
 
 def get_file_path_from_url(file_url: str) -> Path:

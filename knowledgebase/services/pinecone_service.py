@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 # Initialize Pinecone client (like reference)
 _pinecone_client = None
 _pinecone_index = None
+_pinecone_initialized = False
 
 
 def _get_pinecone_client():
@@ -30,15 +31,16 @@ def _get_pinecone_client():
     return _pinecone_client
 
 
-def get_pinecone_index():
+def initialize_pinecone():
     """
-    Get or create Pinecone index.
-    Matches reference implementation from app/services/pinecone_client.py
+    Initialize Pinecone connection at startup.
+    Should be called once when Django starts via AppConfig.ready()
+    """
+    global _pinecone_index, _pinecone_initialized
     
-    Returns:
-        Pinecone index object for vector operations
-    """
-    global _pinecone_index
+    if _pinecone_initialized:
+        logger.debug("Pinecone already initialized")
+        return _pinecone_index
     
     try:
         api_key = settings.PINECONE_API_KEY
@@ -58,11 +60,12 @@ def get_pinecone_index():
         # Get index (like reference - try to get, create if needed)
         try:
             _pinecone_index = pc.Index(index_name)
-            logger.info(f"Connected to Pinecone index: {index_name}")
+            logger.info(f"[STARTUP] Connected to Pinecone index: {index_name}")
+            _pinecone_initialized = True
             return _pinecone_index
         except Exception as e:
             # Index doesn't exist, create it
-            logger.info(f"Index {index_name} not found. Creating new index...")
+            logger.info(f"[STARTUP] Index {index_name} not found. Creating new index...")
             existing_indexes = [idx.name for idx in pc.list_indexes()]
             
             if index_name not in existing_indexes:
@@ -77,15 +80,35 @@ def get_pinecone_index():
                         }
                     }
                 )
-                logger.info(f"Index {index_name} created successfully")
+                logger.info(f"[STARTUP] Index {index_name} created successfully")
             
             _pinecone_index = pc.Index(index_name)
-            logger.info(f"Connected to Pinecone index: {index_name}")
+            logger.info(f"[STARTUP] Connected to Pinecone index: {index_name}")
+            _pinecone_initialized = True
             return _pinecone_index
     
     except Exception as e:
-        logger.error(f"Error connecting to Pinecone: {str(e)}")
+        logger.error(f"[STARTUP] Error connecting to Pinecone: {str(e)}")
         return None
+
+
+def get_pinecone_index():
+    """
+    Get Pinecone index (already initialized at startup).
+    Returns cached index if already initialized, otherwise initializes it.
+    
+    Returns:
+        Pinecone index object for vector operations
+    """
+    global _pinecone_index, _pinecone_initialized
+    
+    # If already initialized at startup, return cached index
+    if _pinecone_initialized and _pinecone_index:
+        return _pinecone_index
+    
+    # Fallback: initialize on first use (if not initialized at startup)
+    logger.warning("Pinecone not initialized at startup, initializing now...")
+    return initialize_pinecone()
 
 
 def upsert_vectors(index, vectors: List[Dict[str, Any]], batch_size: int = 50) -> bool:

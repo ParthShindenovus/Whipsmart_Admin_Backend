@@ -28,7 +28,10 @@ SECRET_KEY = config('SECRET_KEY', default='django-insecure-z)$&r+fl&xy#w&_hnyx(1
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = config('DEBUG', default=True, cast=bool)
 
+# Allow all hosts in development, restrict in production
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1', cast=lambda v: [s.strip() for s in v.split(',')])
+if DEBUG:
+    ALLOWED_HOSTS = ['*']  # Allow all hosts in development
 
 
 # Application definition
@@ -57,6 +60,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'corsheaders.middleware.CorsMiddleware',  # CORS middleware should be early
+    'core.middleware.DisableCSRFForAPI',  # Disable CSRF for API endpoints
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -202,6 +206,7 @@ REST_FRAMEWORK = {
         'rest_framework.renderers.BrowsableAPIRenderer',
     ],
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+    'EXCEPTION_HANDLER': 'core.exceptions.custom_exception_handler',
 }
 
 # JWT Settings
@@ -237,12 +242,6 @@ SPECTACULAR_SETTINGS = {
                 'bearerFormat': 'JWT',
                 'description': 'JWT token authentication. Format: "Bearer <your_access_token>"',
             },
-            'Session': {
-                'type': 'apiKey',
-                'in': 'cookie',
-                'name': 'sessionid',
-                'description': 'Session-based authentication',
-            },
         }
     },
     'TAGS': [
@@ -256,14 +255,63 @@ SPECTACULAR_SETTINGS = {
     'TAG_ORDER': ['Authentication', 'Users', 'Sessions', 'Messages', 'Documents', 'Knowledgebase'],
 }
 
-# CORS settings
-CORS_ALLOWED_ORIGINS = config(
-    'CORS_ALLOWED_ORIGINS',
-    default='http://localhost:3000,http://127.0.0.1:3000',
+# CORS settings - Allow all origins
+CORS_ALLOW_ALL_ORIGINS = True  # Allow all origins (enable for development)
+CORS_ALLOW_CREDENTIALS = True  # Allow cookies/auth headers
+
+# Optional: Specific origins (commented out when CORS_ALLOW_ALL_ORIGINS = True)
+# CORS_ALLOWED_ORIGINS = config(
+#     'CORS_ALLOWED_ORIGINS',
+#     default='http://localhost:3000,http://127.0.0.1:3000',
+#     cast=lambda v: [s.strip() for s in v.split(',')]
+# )
+
+# Additional CORS settings for full access
+CORS_ALLOW_METHODS = [
+    'DELETE',
+    'GET',
+    'OPTIONS',
+    'PATCH',
+    'POST',
+    'PUT',
+]
+
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
+]
+
+# CSRF settings - Allow all origins for development
+# Note: API endpoints (/api/*) are exempt from CSRF via middleware (using JWT auth)
+# For production, restrict to specific domains
+CSRF_TRUSTED_ORIGINS = config(
+    'CSRF_TRUSTED_ORIGINS',
+    default='http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173,http://localhost:8000,http://127.0.0.1:8000,http://localhost:8080,http://127.0.0.1:8080',
     cast=lambda v: [s.strip() for s in v.split(',')]
 )
 
-CORS_ALLOW_CREDENTIALS = True
+# CSRF cookie settings (for development)
+CSRF_COOKIE_SECURE = False  # Set to True in production with HTTPS
+CSRF_COOKIE_HTTPONLY = False
+CSRF_COOKIE_SAMESITE = 'Lax'
+
+# Allow all origins in development mode
+# For REST APIs using JWT authentication, CSRF is not required
+# The middleware DisableCSRFForAPI disables CSRF for /api/ endpoints
+if DEBUG:
+    # Add all common localhost variations
+    additional_origins = [
+        'http://localhost',
+        'http://127.0.0.1',
+    ]
+    CSRF_TRUSTED_ORIGINS = list(CSRF_TRUSTED_ORIGINS) + additional_origins
 
 # Pinecone settings
 PINECONE_API_KEY = config('PINECONE_API_KEY', default='')
@@ -303,3 +351,56 @@ AZURE_STORAGE_CONTAINER_NAME = config('AZURE_STORAGE_CONTAINER_NAME', default=''
 # File upload settings
 FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10MB
 DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10MB
+
+# Logging configuration
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {module} {message}',
+            'style': '{',
+        },
+        'simple': {
+            'format': '{levelname} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+        },
+        'file': {
+            'class': 'logging.FileHandler',
+            'filename': BASE_DIR / 'logs' / 'agent.log',
+            'formatter': 'verbose',
+        },
+    },
+    'root': {
+        'handlers': ['console', 'file'],
+        'level': 'INFO',
+    },
+    'loggers': {
+        'django': {
+            'handlers': ['console', 'file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'chats': {
+            'handlers': ['console', 'file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'agents': {
+            'handlers': ['console', 'file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'knowledgebase': {
+            'handlers': ['console', 'file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    },
+}

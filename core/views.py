@@ -7,6 +7,8 @@ from django.contrib.auth import login
 from drf_spectacular.utils import extend_schema, extend_schema_view
 from .models import AdminUser
 from .serializers import AdminUserSerializer, LoginSerializer
+from .views_base import StandardizedResponseMixin
+from .utils import success_response, error_response
 
 
 @extend_schema_view(
@@ -25,18 +27,15 @@ from .serializers import AdminUserSerializer, LoginSerializer
         description="Create a new admin user account. Requires superuser privileges.",
         tags=['Users'],
     ),
-    update=extend_schema(
-        summary="Update admin user",
-        description="Update an existing admin user. Requires authentication.",
-        tags=['Users'],
-    ),
+    update=extend_schema(exclude=True),  # Hide full update - use partial_update if needed
+    partial_update=extend_schema(exclude=True),  # Hide partial update endpoint
     destroy=extend_schema(
         summary="Delete admin user",
         description="Delete an admin user account. Requires superuser privileges.",
         tags=['Users'],
     ),
 )
-class AdminUserViewSet(viewsets.ModelViewSet):
+class AdminUserViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
     """
     ViewSet for AdminUser model.
     
@@ -71,12 +70,16 @@ class AdminUserViewSet(viewsets.ModelViewSet):
             user = serializer.validated_data['user']
             refresh = RefreshToken.for_user(user)
             login(request, user)
-            return Response({
+            return success_response({
                 'access': str(refresh.access_token),
                 'refresh': str(refresh),
                 'user': AdminUserSerializer(user).data
-            }, status=status.HTTP_200_OK)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            }, message="Login successful")
+        return error_response(
+            message="Invalid credentials",
+            errors=serializer.errors,
+            status_code=status.HTTP_400_BAD_REQUEST
+        )
     
     @extend_schema(
         summary="Get current user",
@@ -88,4 +91,4 @@ class AdminUserViewSet(viewsets.ModelViewSet):
     def me(self, request):
         """Get current user information."""
         serializer = AdminUserSerializer(request.user)
-        return Response(serializer.data)
+        return success_response(serializer.data)

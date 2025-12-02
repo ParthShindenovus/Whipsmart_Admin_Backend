@@ -16,6 +16,8 @@ from .models import Document, DocumentChunk
 from .serializers import DocumentSerializer
 from .services.vectorization_service import vectorize_document, delete_document_vectors, search_documents
 from .services.document_processor import process_document
+from core.views_base import StandardizedResponseMixin
+from core.utils import success_response, error_response
 
 
 @extend_schema_view(
@@ -51,18 +53,15 @@ from .services.document_processor import process_document
         description="Retrieve detailed information about a specific document.",
         tags=['Documents'],
     ),
-    update=extend_schema(
-        summary="Update document",
-        description="Update document metadata. Requires authentication.",
-        tags=['Documents'],
-    ),
+    update=extend_schema(exclude=True),  # Hide update endpoint
+    partial_update=extend_schema(exclude=True),  # Hide partial update endpoint
     destroy=extend_schema(
         summary="Delete document",
         description="Delete a document. Requires authentication.",
         tags=['Documents'],
     ),
 )
-class DocumentViewSet(viewsets.ModelViewSet):
+class DocumentViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
     """
     ViewSet for Document model.
     

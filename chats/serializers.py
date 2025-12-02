@@ -1,6 +1,22 @@
 from rest_framework import serializers
+from django.utils import timezone
 from .models import ChatMessage, Session
 import uuid
+
+
+class ChatRequestSerializer(serializers.Serializer):
+    """
+    Serializer for chat request (both streaming and non-streaming).
+    Used for Swagger documentation to properly display request body.
+    """
+    message = serializers.CharField(
+        required=True,
+        help_text="User message to send to the assistant"
+    )
+    session_id = serializers.CharField(
+        required=True,
+        help_text="Session ID (required). Must be a valid, active, and non-expired session."
+    )
 
 
 class SessionSerializer(serializers.ModelSerializer):
@@ -48,21 +64,41 @@ class ChatMessageSerializer(serializers.ModelSerializer):
                   'is_deleted', 'timestamp']
         read_only_fields = ['id', 'timestamp']
     
+    def validate_session_id(self, value):
+        """Validate that session exists, is active, and not expired."""
+        if not value:
+            raise serializers.ValidationError('session_id is required')
+        
+        # Try to get session by session_id string first, then by UUID
+        try:
+            session = Session.objects.get(session_id=value)
+        except Session.DoesNotExist:
+            try:
+                # Try as UUID
+                session = Session.objects.get(id=value)
+            except (Session.DoesNotExist, ValueError):
+                raise serializers.ValidationError(f'Session not found with session_id: {value}')
+        
+        # Check if session is active
+        if not session.is_active:
+            raise serializers.ValidationError('Session is not active')
+        
+        # Check if session has expired
+        if session.is_expired():
+            raise serializers.ValidationError('Session has expired')
+        
+        return value
+    
     def create(self, validated_data):
         """Create message with session_id. Message is permanently stored."""
         session_id = validated_data.pop('session_id')
         
-        # Try to get session by session_id string first, then by UUID
+        # Get session (validation already done in validate_session_id)
         try:
             session = Session.objects.get(session_id=session_id)
         except Session.DoesNotExist:
-            try:
-                # Try as UUID
-                session = Session.objects.get(id=session_id)
-            except (Session.DoesNotExist, ValueError):
-                raise serializers.ValidationError({
-                    'session_id': f'Session not found with session_id: {session_id}'
-                })
+            # Try as UUID if session_id validation passed
+            session = Session.objects.get(id=session_id)
         
         validated_data['session'] = session
         # Message is automatically saved to database (permanent storage)
