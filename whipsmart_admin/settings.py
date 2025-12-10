@@ -60,6 +60,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',  # WhiteNoise for static files (Heroku)
     'corsheaders.middleware.CorsMiddleware',  # CORS middleware should be early
     'widget.middleware.APIKeyAuthenticationMiddleware',  # API key authentication for widget endpoints
     'core.middleware.DisableCSRFForAPI',  # Disable CSRF for API endpoints
@@ -178,6 +179,9 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
+
+# WhiteNoise configuration for Heroku
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 # Media files
 MEDIA_URL = 'media/'
