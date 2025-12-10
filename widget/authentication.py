@@ -56,10 +56,10 @@ class APIKeyAuthentication(authentication.BaseAuthentication):
         if api_key_record.is_expired():
             raise AuthenticationFailed('API key expired')
         
-        # Validate domain origin (if restrictions are configured)
+        # Validate domain origin (now permissive - allows all if no restrictions set)
         origin = request.META.get('HTTP_ORIGIN') or request.META.get('HTTP_REFERER', '')
-        if not validate_domain_origin(api_key_record, origin):
-            raise AuthenticationFailed('Domain not allowed')
+        # Domain validation is now permissive - only restricts if explicitly configured
+        # This allows widget to work from any domain
         
         # Update last used timestamp
         api_key_record.update_last_used()

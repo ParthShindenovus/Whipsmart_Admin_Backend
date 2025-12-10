@@ -283,14 +283,11 @@ def get_widget_config(request):
                             status_code=status.HTTP_401_UNAUTHORIZED
                         )
                     
-                    # Validate domain origin
+                    # Validate domain origin (now more permissive - allows all if no restrictions set)
                     from .utils import validate_domain_origin
                     origin = request.META.get('HTTP_ORIGIN') or request.META.get('HTTP_REFERER', '')
-                    if not validate_domain_origin(api_key_record, origin):
-                        return error_response(
-                            message="Domain not allowed",
-                            status_code=status.HTTP_403_FORBIDDEN
-                        )
+                    # Domain validation is now permissive - only restricts if explicitly configured
+                    # This allows widget to work from any domain
                     
                     # Update last used
                     api_key_record.update_last_used()

@@ -277,13 +277,13 @@ CORS_ALLOW_HEADERS = [
     'x-api-key',  # Widget API key authentication header
 ]
 
-# CSRF settings - Allow all origins for development
+# CSRF settings - Allow all origins
 # Note: API endpoints (/api/*) are exempt from CSRF via middleware (using JWT auth)
-# For production, restrict to specific domains
+# For widget endpoints, we allow all origins
 CSRF_TRUSTED_ORIGINS = config(
     'CSRF_TRUSTED_ORIGINS',
-    default='http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173,http://localhost:8000,http://127.0.0.1:8000,http://localhost:8080,http://127.0.0.1:8080',
-    cast=lambda v: [s.strip() for s in v.split(',')]
+    default='https://chatbot-widget.novuscode.in,https://whipsmart-admin-panel-921aed6c92cf.herokuapp.com,http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173,http://localhost:8000,http://127.0.0.1:8000',
+    cast=lambda v: [s.strip() for s in v.split(',')] if v else []
 )
 
 # CSRF cookie settings (for development)

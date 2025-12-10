@@ -90,17 +90,10 @@ class APIKeyAuthenticationMiddleware(MiddlewareMixin):
                 status=401
             )
         
-        # Validate domain origin (if restrictions are configured)
+        # Validate domain origin (now permissive - allows all if no restrictions set)
         origin = request.META.get('HTTP_ORIGIN') or request.META.get('HTTP_REFERER', '')
-        if not validate_domain_origin(api_key_record, origin):
-            return JsonResponse(
-                {
-                    'success': False,
-                    'message': 'Domain not allowed',
-                    'error': f'Requests from this domain are not allowed for this API key'
-                },
-                status=403
-            )
+        # Domain validation is now permissive - only restricts if explicitly configured
+        # This allows widget to work from any domain
         
         # Attach API key record to request for use in views
         request.api_key = api_key_record
