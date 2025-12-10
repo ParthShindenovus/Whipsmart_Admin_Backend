@@ -4,7 +4,7 @@ Agent nodes for LangGraph.
 import json
 from openai import AzureOpenAI
 from django.conf import settings
-from agents.prompts import SYSTEM_PROMPT, FINAL_SYNTHESIS_PROMPT
+from agents.prompts import SYSTEM_PROMPT, FINAL_SYNTHESIS_PROMPT, VALIDATION_PROMPT
 from agents.state import AgentState
 import logging
 from datetime import datetime
@@ -150,14 +150,31 @@ def llm_node(state) -> AgentState:
                 text = response.choices[0].message.content.strip()
                 action_data = json.loads(text)
         
+        # Extract user's last message for potential use
+        user_question = ""
+        for msg in reversed(state.messages):
+            if msg.get("role") == "user":
+                user_question = msg.get("content", "")
+                break
+        
         # Validate action data
         if action_data.get("action") == "rag" and not action_data.get("query"):
-            logger.warning("RAG action missing query, defaulting to final")
-            action_data = {"action": "final", "answer": "I need more information to search. Could you clarify your question?"}
+            logger.warning("RAG action missing query, using user's last message as query")
+            if user_question:
+                action_data["query"] = user_question
+            else:
+                action_data = {"action": "final", "answer": "I need more information to search. Could you clarify your question?"}
         elif action_data.get("action") == "car" and not action_data.get("filters"):
             action_data["filters"] = {}
-        elif action_data.get("action") == "final" and not action_data.get("answer"):
-            action_data["answer"] = "I'm here to help! Could you provide more details about what you're looking for?"
+        elif action_data.get("action") == "final":
+            # If LLM chose "final" action, redirect to RAG search instead
+            # This ensures we always check the knowledge base first
+            logger.warning("LLM chose 'final' action, redirecting to RAG search to check knowledge base")
+            if user_question:
+                action_data = {"action": "rag", "query": user_question}
+            else:
+                # Fallback: use a generic query to search knowledge base
+                action_data = {"action": "rag", "query": "WhipSmart services"}
 
         state.next_action = action_data.get("action")
         state.tool_result = action_data
@@ -263,8 +280,10 @@ def final_node(state) -> AgentState:
             for msg in recent_messages
         ])
 
-        # Check if we have no results or low-relevance results
+        # Validate retrieved results for RAG queries
         has_relevant_results = False
+        validation_result = None
+        
         if isinstance(state.tool_result, dict):
             action = state.tool_result.get('action')
             
@@ -272,18 +291,72 @@ def final_node(state) -> AgentState:
                 results = state.tool_result.get('results', [])
                 results_count = len(results)
                 
-                # Check if results are empty or have very low scores
+                # Check if results are empty
                 if results_count == 0:
                     logger.info(f"[WARN]  No RAG results found for query")
                     has_relevant_results = False
                 else:
-                    # Check if any result has a reasonable relevance score (> 0.5)
-                    max_score = max([r.get('score', 0.0) for r in results if isinstance(r, dict)], default=0.0)
-                    logger.info(f"[DOCS] RAG Results: {results_count} documents found, max score: {max_score:.4f}")
-                    has_relevant_results = max_score > 0.5
+                    # Validate retrieved content using LLM
+                    logger.info(f"[VALIDATE] Validating {results_count} retrieved results...")
                     
-                    if not has_relevant_results:
-                        logger.info(f"[WARN]  RAG results have low relevance scores (< 0.5)")
+                    # Prepare content for validation
+                    retrieved_texts = []
+                    scores = []
+                    for r in results:
+                        if isinstance(r, dict):
+                            text = r.get('text', '')[:500]  # Limit text length for validation
+                            score = r.get('score', 0.0)
+                            retrieved_texts.append(f"Score: {score:.4f}\n{text}")
+                            scores.append(score)
+                    
+                    retrieved_content = "\n\n---\n\n".join(retrieved_texts)
+                    scores_str = ", ".join([f"{s:.4f}" for s in scores])
+                    max_score = max(scores) if scores else 0.0
+                    
+                    # Run validation using LLM
+                    try:
+                        validation_prompt = VALIDATION_PROMPT.format(
+                            user_question=user_question,
+                            retrieved_content=retrieved_content[:3000],  # Limit content length
+                            scores=scores_str
+                        )
+                        
+                        validation_response = client.chat.completions.create(
+                            model=model,
+                            messages=[{"role": "user", "content": validation_prompt}],
+                            response_format={"type": "json_object"},
+                            max_tokens=256,
+                            temperature=0.3  # Lower temperature for more consistent validation
+                        )
+                        
+                        validation_text = validation_response.choices[0].message.content.strip()
+                        validation_result = json.loads(validation_text)
+                        
+                        is_suitable = validation_result.get('is_suitable', False)
+                        reason = validation_result.get('reason', 'No reason provided')
+                        relevance_score = validation_result.get('relevance_score', max_score)
+                        has_sufficient_info = validation_result.get('has_sufficient_info', False)
+                        
+                        logger.info(f"[VALIDATE] Validation Result:")
+                        logger.info(f"  - Suitable: {is_suitable}")
+                        logger.info(f"  - Reason: {reason}")
+                        logger.info(f"  - Relevance Score: {relevance_score:.4f}")
+                        logger.info(f"  - Has Sufficient Info: {has_sufficient_info}")
+                        
+                        # Consider results suitable only if validation passes AND score is reasonable
+                        has_relevant_results = is_suitable and has_sufficient_info and relevance_score >= 0.5
+                        
+                        if not has_relevant_results:
+                            logger.info(f"[WARN]  Validation failed or low relevance - will decline to answer")
+                            logger.info(f"  - Validation suitable: {is_suitable}")
+                            logger.info(f"  - Sufficient info: {has_sufficient_info}")
+                            logger.info(f"  - Score threshold: {relevance_score >= 0.5}")
+                    except Exception as e:
+                        logger.error(f"[ERROR] Validation failed: {str(e)}")
+                        # Fallback to score-based validation
+                        max_score = max(scores) if scores else 0.0
+                        logger.info(f"[FALLBACK] Using score-based validation: {max_score:.4f}")
+                        has_relevant_results = max_score > 0.5
                         
             elif action == 'car':
                 results_count = len(state.tool_result.get('results', []))
@@ -302,27 +375,35 @@ def final_node(state) -> AgentState:
             user_question=user_question
         )
         
-        # If no relevant results found, enhance the prompt with specific instructions
+        # If no relevant results found or validation failed, enhance the prompt with specific instructions
         if not has_relevant_results and isinstance(state.tool_result, dict) and state.tool_result.get('action') == 'rag':
-            synthesis_prompt += """
+            validation_info = ""
+            if validation_result:
+                validation_info = f"\nValidation Reason: {validation_result.get('reason', 'Not provided')}"
             
-CRITICAL: The search found NO relevant results or only results with very low relevance scores (< 0.5).
-This means we do NOT have information about the user's question in our knowledge base.
+            synthesis_prompt += f"""
+            
+CRITICAL: The retrieved knowledge base content has been reviewed and validated. The validation determined that the content is NOT suitable to answer the user's question.{validation_info}
 
-You MUST:
-1. Politely tell the user: "I don't have specific information about that topic in my knowledge base."
-2. Suggest what topics we CAN help with. Here are examples:
-   - Electric vehicle leasing options and processes
-   - Novated leases and how they work
-   - Tax implications and benefits of leasing
-   - Vehicle selection and availability
-   - Leasing terms, conditions, and policies
-   - Pricing and payment options
-   - EV charging and infrastructure
-   - WhipSmart services and policies
-3. Be friendly and encourage them to ask about topics we can help with
+This means we do NOT have appropriate information about the user's question in our WhipSmart knowledge base.
 
-Do NOT try to answer the question anyway - only suggest what we CAN help with.
+YOU MUST DECLINE TO ANSWER AND RESPOND WITH THIS EXACT MESSAGE:
+
+"I'm sorry, but I don't have information about that topic in my knowledge base. I can only help with questions about WhipSmart's electric vehicle leasing services, novated leases, and related topics.
+
+Here are some topics I can help you with:
+- Electric vehicle (EV) leasing options and processes
+- Novated leases and how they work
+- Tax implications and benefits of leasing (including FBT exemptions)
+- Vehicle selection and availability
+- Leasing terms, conditions, and policies
+- Pricing, payments, and running costs
+- End-of-lease options and residual payments
+- WhipSmart's services and platform features
+
+Please feel free to ask me about any of these topics! 😊"
+
+DO NOT attempt to answer the question using general knowledge. DO NOT try to be helpful by answering anyway. ONLY suggest topics we can help with.
 """
 
         response = client.chat.completions.create(
