@@ -4,7 +4,8 @@ from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
 from rest_framework.authentication import BaseAuthentication
 from django_filters.rest_framework import DjangoFilterBackend
-from drf_spectacular.utils import extend_schema_view, extend_schema
+from drf_spectacular.utils import extend_schema_view, extend_schema, OpenApiParameter
+from drf_spectacular.types import OpenApiTypes
 from django.http import StreamingHttpResponse, Http404
 from django.utils import timezone
 import json
@@ -14,6 +15,7 @@ from .serializers import ChatMessageSerializer, SessionSerializer, ChatRequestSe
 from agents.graph import get_graph
 from agents.session_manager import session_manager
 from agents.state import AgentState
+from agents.suggestions import generate_suggestions
 from core.views_base import StandardizedResponseMixin
 from core.utils import success_response, error_response
 from widget.authentication import APIKeyAuthentication
@@ -684,4 +686,148 @@ class ChatMessageViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
             return error_response(
                 'An error occurred while processing your request. Please try again.',
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    @extend_schema(
+        summary="Get contextual suggestion questions",
+        description="Get contextually relevant suggestion questions based on conversation history. These are quick-reply suggestions that users can click to continue the conversation. Returns empty array if no suggestions available. No authentication required.",
+        parameters=[
+            OpenApiParameter(
+                name='session_id',
+                type=OpenApiTypes.UUID,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description='Session ID to get suggestions for'
+            ),
+            OpenApiParameter(
+                name='visitor_id',
+                type=OpenApiTypes.UUID,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description='Visitor ID for validation (optional)'
+            ),
+        ],
+        responses={
+            200: {
+                'type': 'object',
+                'properties': {
+                    'success': {'type': 'boolean'},
+                    'data': {
+                        'type': 'object',
+                        'properties': {
+                            'suggestions': {
+                                'type': 'array',
+                                'items': {'type': 'string'},
+                                'description': 'Array of suggestion questions (empty if none available)'
+                            },
+                            'session_id': {'type': 'string'},
+                            'message_count': {'type': 'integer'}
+                        }
+                    }
+                }
+            },
+            400: {'description': 'Bad request - session_id missing'},
+            404: {'description': 'Not found - session does not exist'}
+        },
+        tags=['Messages'],
+    )
+    @action(detail=False, methods=['get'], url_path='suggestions',
+            authentication_classes=[],
+            permission_classes=[AllowAny])
+    def suggestions(self, request):
+        """
+        Get contextual suggestion questions based on conversation history.
+        
+        Query Parameters:
+        - session_id (required): Session ID to get suggestions for
+        - visitor_id (optional): Visitor ID for validation
+        
+        Returns:
+        - suggestions: Array of suggestion strings (empty array if none available)
+        """
+        session_id = request.query_params.get('session_id')
+        
+        if not session_id:
+            return error_response(
+                'session_id is required as query parameter',
+                status_code=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Validate session
+        session, error_response_obj = validate_session(session_id)
+        if error_response_obj:
+            return error_response_obj
+        
+        # Optional: validate visitor_id if provided
+        visitor_id = request.query_params.get('visitor_id')
+        if visitor_id:
+            try:
+                visitor = Visitor.objects.get(id=visitor_id)
+                if session.visitor != visitor:
+                    return error_response(
+                        'Visitor ID does not match the session\'s visitor',
+                        status_code=status.HTTP_403_FORBIDDEN
+                    )
+            except (Visitor.DoesNotExist, ValueError):
+                return error_response(
+                    'Invalid visitor_id',
+                    status_code=status.HTTP_400_BAD_REQUEST
+                )
+        
+        try:
+            # Get conversation messages for this session
+            messages = ChatMessage.objects.filter(
+                session=session,
+                is_deleted=False,
+                role__in=['user', 'assistant']
+            ).order_by('timestamp')
+            
+            message_count = messages.count()
+            
+            # Convert to format expected by generate_suggestions
+            conversation_messages = [
+                {
+                    'role': msg.role,
+                    'content': msg.message
+                }
+                for msg in messages
+            ]
+            
+            # Get last bot message
+            last_bot_message = None
+            for msg in reversed(conversation_messages):
+                if msg.get('role') == 'assistant':
+                    last_bot_message = msg.get('content', '')
+                    break
+            
+            logger.info(f"[SUGGESTIONS] Generating suggestions for session {session_id} with {message_count} messages")
+            
+            # Generate suggestions
+            suggestions = generate_suggestions(
+                conversation_messages=conversation_messages,
+                last_bot_message=last_bot_message,
+                max_suggestions=5
+            )
+            
+            logger.info(f"[SUGGESTIONS] Generated {len(suggestions)} suggestions for session {session_id}")
+            
+            return success_response(
+                {
+                    'suggestions': suggestions,
+                    'session_id': str(session_id),
+                    'message_count': message_count
+                },
+                message=f"Generated {len(suggestions)} suggestion(s)"
+            )
+            
+        except Exception as e:
+            logger.error(f"Error generating suggestions: {str(e)}", exc_info=True)
+            # Return empty suggestions array on error (don't fail the request)
+            return success_response(
+                {
+                    'suggestions': [],
+                    'session_id': str(session_id),
+                    'message_count': 0
+                },
+                message="No suggestions available"
             )
