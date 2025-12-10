@@ -4,8 +4,9 @@ Agent nodes for LangGraph.
 import json
 from openai import AzureOpenAI
 from django.conf import settings
-from agents.prompts import SYSTEM_PROMPT, FINAL_SYNTHESIS_PROMPT, VALIDATION_PROMPT
+from agents.prompts import SYSTEM_PROMPT, FINAL_SYNTHESIS_PROMPT, VALIDATION_PROMPT, DECISION_MAKER_PROMPT
 from agents.state import AgentState
+from agents.utils import is_greeting, get_greeting_response
 import logging
 from datetime import datetime
 
@@ -44,6 +45,151 @@ def _get_openai_client():
     except Exception as e:
         logger.error(f"Failed to initialize Azure OpenAI client: {str(e)}")
         return None, None
+
+
+def decision_maker_node(state) -> AgentState:
+    """
+    Decision maker node: Analyzes user message and determines if tool assistance is needed.
+    This is the first node that decides routing strategy.
+    """
+    # Handle dict input from LangGraph
+    if isinstance(state, dict):
+        state = AgentState.from_dict(state)
+    
+    logger.info("=" * 80)
+    logger.info(f"[DECISION] DECISION MAKER NODE - Analyzing User Message")
+    
+    # Extract user's last message
+    user_message = ""
+    for msg in reversed(state.messages):
+        if msg.get("role") == "user":
+            user_message = msg.get("content", "")
+            break
+    
+    logger.info(f"[USER] User message: {user_message[:100]}...")
+    
+    # Quick check: if it's a greeting, handle directly
+    if user_message and is_greeting(user_message):
+        logger.info(f"[DECISION] Detected greeting - routing to final without tool")
+        greeting_response = get_greeting_response(user_message)
+        state.next_action = "final"
+        state.tool_result = {
+            "action": "final",
+            "answer": greeting_response
+        }
+        state.last_activity = datetime.now()
+        logger.info("=" * 80)
+        return state.to_dict()
+    
+    client, model = _get_openai_client()
+    if not client or not model:
+        logger.error("[ERROR] OpenAI client not available")
+        # Fallback: assume RAG search needed
+        state.next_action = "rag"
+        state.tool_result = {
+            "action": "rag",
+            "query": user_message
+        }
+        return state.to_dict()
+    
+    try:
+        # Build conversation context
+        recent_messages = state.messages[-4:] if len(state.messages) > 4 else state.messages
+        conversation_context = "\n".join([
+            f"{msg.get('role', 'unknown')}: {msg.get('content', '')}"
+            for msg in recent_messages
+        ])
+        
+        # Create decision prompt
+        decision_prompt = DECISION_MAKER_PROMPT.format(
+            user_message=user_message,
+            conversation_context=conversation_context
+        )
+        
+        logger.info("[PROC]  Analyzing message with decision maker...")
+        
+        # Get decision from LLM
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": decision_prompt}],
+                response_format={"type": "json_object"},
+                max_tokens=256,
+                temperature=0.3  # Lower temperature for more consistent decisions
+            )
+            decision_text = response.choices[0].message.content.strip()
+            decision_data = json.loads(decision_text)
+        except (json.JSONDecodeError, AttributeError, KeyError) as e:
+            logger.warning(f"JSON mode failed in decision maker: {str(e)}")
+            # Fallback: use simple heuristics
+            if any(word in user_message.lower() for word in ['car', 'vehicle', 'ev', 'tesla', 'find', 'search', 'available']):
+                decision_data = {"needs_tool": True, "tool_type": "car", "reason": "Vehicle search detected"}
+            elif any(word in user_message.lower() for word in ['what', 'how', 'why', 'when', 'where', 'explain', 'tell me']):
+                decision_data = {"needs_tool": True, "tool_type": "rag", "query": user_message, "reason": "Question detected"}
+            else:
+                decision_data = {"needs_tool": False, "tool_type": "final", "reason": "Simple statement/greeting"}
+        
+        needs_tool = decision_data.get("needs_tool", True)
+        tool_type = decision_data.get("tool_type", "rag")
+        reason = decision_data.get("reason", "No reason provided")
+        
+        logger.info(f"[DECISION] Decision Made:")
+        logger.info(f"  - Needs Tool: {needs_tool}")
+        logger.info(f"  - Tool Type: {tool_type}")
+        logger.info(f"  - Reason: {reason}")
+        
+        # Set up state based on decision
+        if tool_type == "rag":
+            query = decision_data.get("query") or user_message
+            state.next_action = "rag"
+            state.tool_result = {
+                "action": "rag",
+                "query": query
+            }
+            logger.info(f"  -> Routing to RAG search with query: {query[:50]}...")
+        elif tool_type == "car":
+            filters = decision_data.get("filters", {})
+            state.next_action = "car"
+            state.tool_result = {
+                "action": "car",
+                "filters": filters
+            }
+            logger.info(f"  -> Routing to car search with filters: {filters}")
+        else:  # final
+            direct_answer = decision_data.get("direct_answer")
+            if direct_answer:
+                state.next_action = "final"
+                state.tool_result = {
+                    "action": "final",
+                    "answer": direct_answer
+                }
+                logger.info(f"  -> Routing to final with direct answer")
+            else:
+                # Generate appropriate response
+                if is_greeting(user_message):
+                    answer = get_greeting_response(user_message)
+                else:
+                    answer = f"I'm here to help you with WhipSmart's electric vehicle leasing services and novated leases. How can I assist you today?"
+                state.next_action = "final"
+                state.tool_result = {
+                    "action": "final",
+                    "answer": answer
+                }
+                logger.info(f"  -> Routing to final with generated response")
+        
+        state.last_activity = datetime.now()
+        logger.info("=" * 80)
+        return state.to_dict()
+        
+    except Exception as e:
+        logger.error(f"Error in decision_maker_node: {str(e)}", exc_info=True)
+        # Fallback: route to RAG search
+        state.next_action = "rag"
+        state.tool_result = {
+            "action": "rag",
+            "query": user_message
+        }
+        return state.to_dict()
 
 
 def llm_node(state) -> AgentState:
@@ -157,6 +303,20 @@ def llm_node(state) -> AgentState:
                 user_question = msg.get("content", "")
                 break
         
+        # Check if message is a greeting or common statement - handle directly without RAG search
+        if user_question and is_greeting(user_question):
+            logger.info(f"[GREETING] Detected greeting/common statement: '{user_question[:50]}...'")
+            greeting_response = get_greeting_response(user_question)
+            state.next_action = "final"
+            state.tool_result = {
+                "action": "final",
+                "answer": greeting_response
+            }
+            state.last_activity = datetime.now()
+            logger.info(f"[GREETING] Responding with greeting message ({len(greeting_response)} characters)")
+            logger.info("=" * 80)
+            return state.to_dict()
+        
         # Validate action data
         if action_data.get("action") == "rag" and not action_data.get("query"):
             logger.warning("RAG action missing query, using user's last message as query")
@@ -167,14 +327,32 @@ def llm_node(state) -> AgentState:
         elif action_data.get("action") == "car" and not action_data.get("filters"):
             action_data["filters"] = {}
         elif action_data.get("action") == "final":
-            # If LLM chose "final" action, redirect to RAG search instead
-            # This ensures we always check the knowledge base first
-            logger.warning("LLM chose 'final' action, redirecting to RAG search to check knowledge base")
-            if user_question:
-                action_data = {"action": "rag", "query": user_question}
+            # Check if it's a greeting - if so, keep the final action
+            if user_question and is_greeting(user_question):
+                logger.info("LLM chose 'final' for greeting - keeping final action")
+                # Ensure answer is provided
+                if not action_data.get("answer"):
+                    action_data["answer"] = get_greeting_response(user_question)
+            elif action_data.get("answer"):
+                # If LLM provided an answer in final action, check if it's appropriate
+                answer = action_data.get("answer", "").lower()
+                # If answer looks like a greeting response or decline message, keep it
+                if any(phrase in answer for phrase in ["hello", "hi", "whipsmart", "can help", "assist"]):
+                    logger.info("LLM provided appropriate final answer - keeping it")
+                else:
+                    # Otherwise, redirect to RAG to check knowledge base
+                    logger.warning("LLM chose 'final' action without clear answer, redirecting to RAG search")
+                    if user_question:
+                        action_data = {"action": "rag", "query": user_question}
+                    else:
+                        action_data = {"action": "rag", "query": "WhipSmart services"}
             else:
-                # Fallback: use a generic query to search knowledge base
-                action_data = {"action": "rag", "query": "WhipSmart services"}
+                # No answer provided, redirect to RAG
+                logger.warning("LLM chose 'final' action without answer, redirecting to RAG search")
+                if user_question:
+                    action_data = {"action": "rag", "query": user_question}
+                else:
+                    action_data = {"action": "rag", "query": "WhipSmart services"}
 
         state.next_action = action_data.get("action")
         state.tool_result = action_data

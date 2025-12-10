@@ -3,7 +3,7 @@ LangGraph agent graph builder.
 """
 from langgraph.graph import StateGraph, END
 from agents.state import AgentState
-from agents.nodes import llm_node, router_node, final_node
+from agents.nodes import decision_maker_node, llm_node, router_node, final_node
 from agents.tools.rag_tool import rag_tool_node
 from agents.tools.car_tool import car_tool_node
 import logging
@@ -25,17 +25,18 @@ def build_graph():
     graph = StateGraph(dict)
 
     # Add nodes
-    graph.add_node("llm", llm_node)
+    graph.add_node("decision", decision_maker_node)  # Decision maker - first node
+    graph.add_node("llm", llm_node)  # LLM node (kept for backward compatibility, but decision_maker is primary)
     graph.add_node("rag", rag_tool_node)
     graph.add_node("car", car_tool_node)
     graph.add_node("final", final_node)
 
-    # Set entry point
-    graph.set_entry_point("llm")
+    # Set entry point to decision maker
+    graph.set_entry_point("decision")
 
-    # Add conditional routing from LLM node
+    # Add conditional routing from decision maker node
     graph.add_conditional_edges(
-        "llm",
+        "decision",
         router_node,
         {
             "rag": "rag",
