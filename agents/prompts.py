@@ -129,17 +129,19 @@ Retrieval Scores:
 {scores}
 
 INSTRUCTIONS:
-1. Review the retrieved content carefully
-2. Determine if the content actually answers the user's question
-3. Check if the content is relevant to the question topic
-4. Consider the retrieval scores - scores below 0.5 indicate low relevance
-5. Check if the content contains sufficient information to provide a meaningful answer
+1. Review the retrieved content carefully - be LENIENT and look for ANY connection to the user's question
+2. Determine if the content relates to or can help answer the user's question (even partially)
+3. Check if the content mentions WhipSmart, services, platform, features, leasing, EVs, or related topics
+4. Consider the retrieval scores - scores above 0.3 may still be relevant, especially if content mentions related terms
+5. Check if the content contains ANY useful information about the question topic
+6. BE GENEROUS - if content mentions WhipSmart services, platform features, customer approach, or related topics, consider it suitable
 
-VALIDATION CRITERIA:
-- Content must be directly related to the user's question
-- Content must contain enough information to answer the question
-- At least one result should have a relevance score >= 0.5
-- Content must be about WhipSmart, EV leasing, novated leases, or related topics
+VALIDATION CRITERIA (BE LENIENT):
+- Content should be related to WhipSmart, EV leasing, novated leases, or related topics
+- Content should mention terms related to the user's question (e.g., "services", "platform", "features", "customer", etc.)
+- Even partial matches are acceptable - if content discusses WhipSmart's approach, services, or platform, it's likely suitable
+- Scores above 0.3 can be considered relevant if content mentions related terms
+- If user asks about "services" or "platform features" and content mentions WhipSmart's approach, services, or platform, it IS suitable
 
 RESPOND WITH JSON ONLY:
 {{
@@ -149,7 +151,7 @@ RESPOND WITH JSON ONLY:
     "has_sufficient_info": true or false
 }}
 
-If is_suitable is false, the system will decline to answer and suggest relevant topics instead.
+IMPORTANT: Be GENEROUS with validation. If content mentions WhipSmart and relates to services, platform, features, or customer approach, mark it as suitable even if scores are moderate (0.3-0.5).
 """
 
 DECISION_MAKER_PROMPT = """You are a decision maker that analyzes user messages and determines if tool assistance is needed.

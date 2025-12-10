@@ -10,7 +10,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def rag_tool_node(state, top_k: int = 5) -> AgentState:
+def rag_tool_node(state, top_k: int = 8) -> AgentState:
     """
     RAG tool node: searches WhipSmart documents using Pinecone vector search.
     Expects state.tool_result to contain {"action":"rag","query":"..."}

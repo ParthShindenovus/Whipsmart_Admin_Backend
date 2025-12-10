@@ -17,6 +17,42 @@ _client = None
 _model = None
 
 
+def _expand_query_for_rag(query: str) -> str:
+    """
+    Expand query to improve matching with knowledge base content.
+    Adds related terms that are likely to appear in the knowledge base.
+    """
+    if not query:
+        return query
+    
+    query_lower = query.lower()
+    
+    # Map user queries to expanded queries with related terms
+    expansion_map = {
+        "services": "services solutions customer approach platform",
+        "platform": "platform services features website profile management",
+        "features": "features platform services website profile",
+        "whipsmart's services": "WhipSmart services solutions customer approach platform features",
+        "whipsmart services": "WhipSmart services solutions customer approach platform features",
+        "platform features": "platform features services website profile management",
+    }
+    
+    # Check if query contains any key phrases that need expansion
+    expanded_query = query
+    for key_phrase, expansion in expansion_map.items():
+        if key_phrase in query_lower:
+            # Add expansion terms if not already present
+            expansion_terms = expansion.split()
+            existing_terms = set(query_lower.split())
+            new_terms = [term for term in expansion_terms if term not in existing_terms]
+            if new_terms:
+                expanded_query = f"{query} {' '.join(new_terms)}"
+                logger.info(f"[QUERY EXPANSION] Expanded query: '{query}' -> '{expanded_query}'")
+            break
+    
+    return expanded_query
+
+
 def _get_openai_client():
     """Initialize Azure OpenAI client (singleton)"""
     global _client, _model
@@ -141,6 +177,8 @@ def decision_maker_node(state) -> AgentState:
         # Set up state based on decision
         if tool_type == "rag":
             query = decision_data.get("query") or user_message
+            # Expand query for better matching with knowledge base
+            query = _expand_query_for_rag(query)
             state.next_action = "rag"
             state.tool_result = {
                 "action": "rag",
@@ -318,12 +356,16 @@ def llm_node(state) -> AgentState:
             return state.to_dict()
         
         # Validate action data
-        if action_data.get("action") == "rag" and not action_data.get("query"):
-            logger.warning("RAG action missing query, using user's last message as query")
-            if user_question:
-                action_data["query"] = user_question
+        if action_data.get("action") == "rag":
+            if not action_data.get("query"):
+                logger.warning("RAG action missing query, using user's last message as query")
+                if user_question:
+                    action_data["query"] = user_question
+                else:
+                    action_data = {"action": "final", "answer": "I need more information to search. Could you clarify your question?"}
             else:
-                action_data = {"action": "final", "answer": "I need more information to search. Could you clarify your question?"}
+                # Expand query for better matching
+                action_data["query"] = _expand_query_for_rag(action_data["query"])
         elif action_data.get("action") == "car" and not action_data.get("filters"):
             action_data["filters"] = {}
         elif action_data.get("action") == "final":
@@ -343,14 +385,16 @@ def llm_node(state) -> AgentState:
                     # Otherwise, redirect to RAG to check knowledge base
                     logger.warning("LLM chose 'final' action without clear answer, redirecting to RAG search")
                     if user_question:
-                        action_data = {"action": "rag", "query": user_question}
+                        query = _expand_query_for_rag(user_question)
+                        action_data = {"action": "rag", "query": query}
                     else:
                         action_data = {"action": "rag", "query": "WhipSmart services"}
             else:
                 # No answer provided, redirect to RAG
                 logger.warning("LLM chose 'final' action without answer, redirecting to RAG search")
                 if user_question:
-                    action_data = {"action": "rag", "query": user_question}
+                    query = _expand_query_for_rag(user_question)
+                    action_data = {"action": "rag", "query": query}
                 else:
                     action_data = {"action": "rag", "query": "WhipSmart services"}
 
@@ -521,8 +565,14 @@ def final_node(state) -> AgentState:
                         logger.info(f"  - Relevance Score: {relevance_score:.4f}")
                         logger.info(f"  - Has Sufficient Info: {has_sufficient_info}")
                         
-                        # Consider results suitable only if validation passes AND score is reasonable
-                        has_relevant_results = is_suitable and has_sufficient_info and relevance_score >= 0.5
+                        # Consider results suitable if validation passes OR if score is reasonable
+                        # Be more lenient: accept if validation passes OR if score is decent (>= 0.35)
+                        # This ensures we don't reject valid results due to overly strict validation
+                        score_threshold = 0.35  # Lowered from 0.5 to be more lenient
+                        has_relevant_results = (
+                            (is_suitable and has_sufficient_info) or 
+                            (relevance_score >= score_threshold and is_suitable)
+                        )
                         
                         if not has_relevant_results:
                             logger.info(f"[WARN]  Validation failed or low relevance - will decline to answer")
@@ -531,10 +581,11 @@ def final_node(state) -> AgentState:
                             logger.info(f"  - Score threshold: {relevance_score >= 0.5}")
                     except Exception as e:
                         logger.error(f"[ERROR] Validation failed: {str(e)}")
-                        # Fallback to score-based validation
+                        # Fallback to score-based validation (more lenient threshold)
                         max_score = max(scores) if scores else 0.0
                         logger.info(f"[FALLBACK] Using score-based validation: {max_score:.4f}")
-                        has_relevant_results = max_score > 0.5
+                        # Lowered threshold from 0.5 to 0.35 to be more lenient
+                        has_relevant_results = max_score >= 0.35
                         
             elif action == 'car':
                 results_count = len(state.tool_result.get('results', []))
