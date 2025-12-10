@@ -125,6 +125,57 @@ class SessionViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
         This prevents DRF from using default authentication classes.
         """
         return []
+    
+    def create(self, request, *args, **kwargs):
+        """
+        Create a new session and generate initial message based on conversation_type.
+        
+        For Sales: Asks for name
+        For Support: Asks for name
+        For Knowledge: No initial message
+        """
+        serializer = self.get_serializer(data=request.data or {})
+        serializer.is_valid(raise_exception=True)
+        session = serializer.save()
+        
+        # Generate initial message based on conversation_type
+        initial_message = None
+        conversation_type = session.conversation_type
+        
+        if conversation_type == 'sales':
+            initial_message = "Hello! To connect you with our sales team, could you please provide your full name?"
+        elif conversation_type == 'support':
+            initial_message = "Hello! I'm here to help. Could you please provide your full name?"
+        # For 'knowledge' or 'routing', no initial message
+        
+        # Store initial message if generated
+        initial_message_obj = None
+        if initial_message:
+            initial_message_obj = ChatMessage.objects.create(
+                session=session,
+                message=initial_message,
+                role='assistant',
+                metadata={'initial_message': True}
+            )
+            logger.info(f"Created initial message for session {session.id} (type: {conversation_type})")
+        
+        # Prepare response data
+        response_data = serializer.data.copy()
+        if initial_message_obj:
+            response_data['initial_message'] = {
+                'id': str(initial_message_obj.id),
+                'message': initial_message,
+                'role': 'assistant',
+                'timestamp': initial_message_obj.timestamp.isoformat()
+            }
+        else:
+            response_data['initial_message'] = None
+        
+        return success_response(
+            response_data,
+            message="Session created successfully. Use this session_id to send chat messages.",
+            status_code=status.HTTP_201_CREATED
+        )
 
 
 @extend_schema_view(

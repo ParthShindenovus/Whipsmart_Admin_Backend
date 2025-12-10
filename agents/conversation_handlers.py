@@ -316,14 +316,15 @@ Is this correct? (Yes/No)""",
 class SupportConversationHandler:
     """
     Support Agent Handler.
-    Collects: Issue → Name → Email → Confirmation → Complete
+    Collects: Name → Issue → Email → Confirmation → Complete
+    Starts with Name collection (initial message asks for name).
     """
     
     def __init__(self, session: Session):
         self.session = session
         self.conversation_data = session.conversation_data or {}
         if 'step' not in self.conversation_data:
-            self.conversation_data['step'] = 'issue'
+            self.conversation_data['step'] = 'name'
     
     def handle_message(self, user_message: str) -> Dict:
         """Process user message in support flow."""
@@ -337,7 +338,7 @@ class SupportConversationHandler:
                 'escalate_to': None
             }
         
-        step = self.conversation_data.get('step', 'issue')
+        step = self.conversation_data.get('step', 'name')
         user_message_lower = user_message.lower().strip()
         
         # Handle confirmation step
@@ -350,26 +351,7 @@ class SupportConversationHandler:
         email = self._extract_email(user_message) if not self.conversation_data.get('email') else None
         
         # Handle data collection
-        if step == 'issue':
-            if not issue:
-                issue_text = user_message.strip()
-                if len(issue_text) < 10:
-                    return {
-                        'message': "I'm here to help. Could you please describe the issue you're experiencing in more detail?",
-                        'suggestions': [],
-                        'complete': False,
-                        'needs_info': 'issue',
-                        'escalate_to': None
-                    }
-                return self._collect_issue(issue_text)
-            else:
-                # Issue already collected, move to name
-                if name:
-                    return self._collect_name(name)
-                else:
-                    return self._collect_name(user_message.strip())
-        
-        elif step == 'name':
+        if step == 'name':
             if name:
                 return self._collect_name(name)
             elif self._is_question(user_message):
@@ -383,6 +365,30 @@ class SupportConversationHandler:
                 }
             else:
                 return self._collect_name(user_message.strip())
+        
+        elif step == 'issue':
+            if not issue:
+                issue_text = user_message.strip()
+                if len(issue_text) < 10:
+                    return {
+                        'message': "I'm here to help. Could you please describe the issue you're experiencing in more detail?",
+                        'suggestions': [],
+                        'complete': False,
+                        'needs_info': 'issue',
+                        'escalate_to': None
+                    }
+                return self._collect_issue(issue_text)
+            elif self._is_question(user_message):
+                answer = self._answer_question(user_message)
+                return {
+                    'message': f"{answer}\n\nCould you please describe the issue you're experiencing?",
+                    'suggestions': [],
+                    'complete': False,
+                    'needs_info': 'issue',
+                    'escalate_to': None
+                }
+            else:
+                return self._collect_issue(user_message.strip())
         
         elif step == 'email':
             if email:
@@ -415,14 +421,14 @@ class SupportConversationHandler:
             }
         
         self.conversation_data['issue'] = issue
-        self.conversation_data['step'] = 'name'
+        self.conversation_data['step'] = 'email'
         self._save_conversation_data()
         
         return {
-            'message': "Thank you for describing the issue. To help our support team assist you better, could you please provide your name?",
+            'message': "Thank you for describing the issue. Now, could you please provide your email address so our support team can contact you?",
             'suggestions': [],
             'complete': False,
-            'needs_info': 'name',
+            'needs_info': 'email',
             'escalate_to': None
         }
     
@@ -439,14 +445,14 @@ class SupportConversationHandler:
             }
         
         self.conversation_data['name'] = name
-        self.conversation_data['step'] = 'email'
+        self.conversation_data['step'] = 'issue'
         self._save_conversation_data()
         
         return {
-            'message': f"Thank you, {name}! Now, could you please provide your email address so our support team can contact you?",
+            'message': f"Thank you, {name}! Could you please describe the issue you're experiencing?",
             'suggestions': [],
             'complete': False,
-            'needs_info': 'email',
+            'needs_info': 'issue',
             'escalate_to': None
         }
     

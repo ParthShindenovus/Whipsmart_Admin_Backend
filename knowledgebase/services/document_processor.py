@@ -147,37 +147,78 @@ def get_file_path_from_url(file_url: str) -> Path:
     
     parsed_url = urlparse(file_url)
     
-    # Check if it's a local file URL (starts with http://localhost or http://127.0.0.1 or relative)
+    # Normalize MEDIA_URL to handle both with and without leading slash
+    media_url_normalized = settings.MEDIA_URL.rstrip('/')
+    if not media_url_normalized.startswith('/'):
+        media_url_normalized = '/' + media_url_normalized
+    
+    # Check if it's a relative path starting with MEDIA_URL (e.g., media/documents/... or /media/documents/...)
+    # Handle both "media/documents/..." and "/media/documents/..." formats
+    file_url_normalized = file_url.lstrip('/')
+    media_url_normalized_no_slash = media_url_normalized.lstrip('/')
+    
+    if not parsed_url.scheme and (file_url.startswith(settings.MEDIA_URL) or file_url.startswith(media_url_normalized) or file_url_normalized.startswith(media_url_normalized_no_slash)):
+        # Remove MEDIA_URL prefix (handle both with and without leading slash)
+        if file_url.startswith(settings.MEDIA_URL):
+            relative_path = file_url[len(settings.MEDIA_URL):].lstrip('/')
+        elif file_url.startswith(media_url_normalized):
+            relative_path = file_url[len(media_url_normalized):].lstrip('/')
+        else:
+            relative_path = file_url_normalized[len(media_url_normalized_no_slash):].lstrip('/')
+        
+        file_path = Path(settings.MEDIA_ROOT) / relative_path
+        logger.info(f"Resolved relative media URL '{file_url}' to '{file_path}'")
+        return file_path
+    
+    # Check if it's a local file URL (starts with http://localhost or http://127.0.0.1)
     if parsed_url.scheme in ('http', 'https'):
         # Check if it's a local development URL
         if parsed_url.netloc in ('localhost', '127.0.0.1', '') or 'localhost' in parsed_url.netloc:
-            # Extract path from URL (remove MEDIA_URL prefix)
+            # Extract path from URL (remove MEDIA_URL prefix if present)
             url_path = parsed_url.path
-            if url_path.startswith(settings.MEDIA_URL):
-                url_path = url_path[len(settings.MEDIA_URL):]
+            # Handle both /media/... and media/... formats
+            if url_path.startswith(media_url_normalized):
+                url_path = url_path[len(media_url_normalized):].lstrip('/')
+            elif url_path.startswith('/' + settings.MEDIA_URL):
+                url_path = url_path[len('/' + settings.MEDIA_URL):].lstrip('/')
+            elif url_path.startswith(settings.MEDIA_URL):
+                url_path = url_path[len(settings.MEDIA_URL):].lstrip('/')
+            
             # Build local file path
-            return Path(settings.MEDIA_ROOT) / url_path.lstrip('/')
+            file_path = Path(settings.MEDIA_ROOT) / url_path
+            logger.info(f"Resolved localhost URL '{file_url}' to '{file_path}'")
+            return file_path
         else:
             # Remote URL - download to temp location
             import tempfile
             import requests
+            logger.info(f"Downloading remote file from '{file_url}'")
             temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=Path(parsed_url.path).suffix)
             temp_path = Path(temp_file.name)
             
             # Download from URL
-            response = requests.get(file_url, stream=True)
+            response = requests.get(file_url, stream=True, timeout=30)
             response.raise_for_status()
             for chunk in response.iter_content(chunk_size=8192):
                 temp_file.write(chunk)
             temp_file.close()
+            logger.info(f"Downloaded remote file to '{temp_path}'")
             return temp_path
     else:
         # Local file path (file:// or relative path)
         if parsed_url.scheme == 'file':
             return Path(parsed_url.path)
         else:
-            # Assume it's a relative path in MEDIA_ROOT
-            return Path(settings.MEDIA_ROOT) / file_url.lstrip('/')
+            # Assume it's a relative path - try both as-is and relative to MEDIA_ROOT
+            # First try as absolute path if it starts with /
+            if file_url.startswith('/'):
+                file_path = Path(file_url)
+                if file_path.exists():
+                    return file_path
+            # Otherwise, assume it's relative to MEDIA_ROOT
+            file_path = Path(settings.MEDIA_ROOT) / file_url.lstrip('/')
+            logger.info(f"Resolved relative path '{file_url}' to '{file_path}'")
+            return file_path
 
 
 def extract_text_from_file(file_path: Path, file_type: str) -> str:
@@ -249,17 +290,32 @@ def process_document(file_url: str, file_type: str, document_id: str, title: str
         return process_url_document(file_url, document_id, title, save_to_db)
     
     # Get file path (handles both local and cloud storage)
-    file_path = get_file_path_from_url(file_url)
+    try:
+        file_path = get_file_path_from_url(file_url)
+        logger.info(f"Resolved file URL '{file_url}' to path '{file_path}'")
+    except Exception as e:
+        logger.error(f"Error resolving file path from URL '{file_url}': {str(e)}", exc_info=True)
+        raise ValueError(f"Could not resolve file path from URL: {file_url}. Error: {str(e)}")
+    
+    # Check if file exists
+    if not file_path.exists():
+        error_msg = f"File not found at path: {file_path} (resolved from URL: {file_url})"
+        logger.error(error_msg)
+        raise FileNotFoundError(error_msg)
+    
     parsed_url = urlparse(file_url)
     is_temp_file = parsed_url.scheme in ('http', 'https') and parsed_url.netloc not in ('localhost', '127.0.0.1', '') and 'localhost' not in parsed_url.netloc
     
     try:
         # Extract text
+        logger.info(f"Extracting text from file '{file_path}' (type: {file_type})")
         text = extract_text_from_file(file_path, file_type)
         
-        if not text:
-            logger.warning(f"No text extracted from {file_url}")
+        if not text or len(text.strip()) == 0:
+            logger.warning(f"No text extracted from {file_url} (file_path: {file_path})")
             return []
+        
+        logger.info(f"Extracted {len(text)} characters from file '{file_path}'")
         
         # Chunk the text
         chunks = chunk_text(text)

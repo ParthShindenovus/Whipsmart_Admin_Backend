@@ -10,6 +10,7 @@ from django.core.files.storage import default_storage
 from django.http import FileResponse, Http404
 from pathlib import Path
 import logging
+import uuid
 
 logger = logging.getLogger(__name__)
 from .models import Document, DocumentChunk
@@ -81,6 +82,25 @@ class DocumentViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
         if not self.request.user.is_superuser:
             queryset = queryset.filter(uploaded_by=self.request.user)
         return queryset
+    
+    def validate_document_id(self, pk):
+        """Validate document ID is a valid UUID."""
+        if not pk or pk == 'undefined' or pk == 'null':
+            return error_response(
+                'Document ID is required and must be a valid UUID. Please provide a valid document ID.',
+                status_code=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Validate UUID format
+        try:
+            uuid.UUID(str(pk))
+        except (ValueError, TypeError):
+            return error_response(
+                f'Invalid document ID format: "{pk}". Document ID must be a valid UUID.',
+                status_code=status.HTTP_400_BAD_REQUEST
+            )
+        
+        return None  # Validation passed
     
     def perform_create(self, serializer):
         """Handle file upload, save to media folder, and set file_url. Auto-detect title and file_type from file."""
@@ -160,6 +180,11 @@ class DocumentViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='chunk')
     def chunk(self, request, pk=None):
         """Chunk a document and store chunks in database."""
+        # Validate document ID
+        validation_error = self.validate_document_id(pk)
+        if validation_error:
+            return validation_error
+        
         document = self.get_object()
         
         # Check if document is in valid state
@@ -171,6 +196,8 @@ class DocumentViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
         
         # Process document and save chunks to DB
         try:
+            logger.info(f"Starting chunking for document {document.id} (file_url: {document.file_url}, file_type: {document.file_type})")
+            
             processed_chunks = process_document(
                 file_url=document.file_url,
                 file_type=document.file_type,
@@ -180,21 +207,40 @@ class DocumentViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
             )
             
             if processed_chunks:
-                return Response({
-                    'success': True,
-                    'chunks_created': len(processed_chunks),
-                    'message': f'Document chunked successfully. {len(processed_chunks)} chunks created.'
-                }, status=status.HTTP_200_OK)
+                logger.info(f"Successfully created {len(processed_chunks)} chunks for document {document.id}")
+                return success_response(
+                    {
+                        'chunks_created': len(processed_chunks),
+                        'document_id': str(document.id),
+                        'document_title': document.title,
+                        'state': document.state
+                    },
+                    message=f'Document chunked successfully. {len(processed_chunks)} chunks created.'
+                )
             else:
-                return Response({
-                    'success': False,
-                    'message': 'No text extracted from document'
-                }, status=status.HTTP_400_BAD_REQUEST)
+                logger.warning(f"No chunks created for document {document.id} - no text extracted")
+                return error_response(
+                    'No text extracted from document. The file may be empty, corrupted, or in an unsupported format.',
+                    status_code=status.HTTP_400_BAD_REQUEST
+                )
+        except FileNotFoundError as e:
+            logger.error(f"File not found error for document {document.id}: {str(e)}")
+            return error_response(
+                f'File not found: {str(e)}. Please ensure the file exists at the specified location.',
+                status_code=status.HTTP_404_NOT_FOUND
+            )
+        except ValueError as e:
+            logger.error(f"Value error for document {document.id}: {str(e)}")
+            return error_response(
+                f'Invalid file URL or path: {str(e)}',
+                status_code=status.HTTP_400_BAD_REQUEST
+            )
         except Exception as e:
-            return Response({
-                'success': False,
-                'message': f'Error chunking document: {str(e)}'
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            logger.error(f"Error chunking document {document.id}: {str(e)}", exc_info=True)
+            return error_response(
+                f'Error chunking document: {str(e)}. Please check the file format and try again.',
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
     
     @extend_schema(
         summary="Vectorize document",
@@ -216,6 +262,11 @@ class DocumentViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='vectorize')
     def vectorize(self, request, pk=None):
         """Vectorize a document and upload to Pinecone."""
+        # Validate document ID
+        validation_error = self.validate_document_id(pk)
+        if validation_error:
+            return validation_error
+        
         document = self.get_object()
         
         # Check if already vectorized/live
@@ -270,6 +321,11 @@ class DocumentViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=['get'], url_path='chunks')
     def get_chunks(self, request, pk=None):
         """Get all chunks for a document."""
+        # Validate document ID
+        validation_error = self.validate_document_id(pk)
+        if validation_error:
+            return validation_error
+        
         document = self.get_object()
         
         chunks = DocumentChunk.objects.filter(document=document).order_by('chunk_index')
@@ -302,6 +358,11 @@ class DocumentViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='remove-from-vectordb')
     def remove_from_vectordb(self, request, pk=None):
         """Remove document vectors from Pinecone."""
+        # Validate document ID
+        validation_error = self.validate_document_id(pk)
+        if validation_error:
+            return validation_error
+        
         document = self.get_object()
         
         if document.state != 'live':
@@ -370,6 +431,11 @@ class DocumentViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=['get'], url_path='download')
     def download(self, request, pk=None):
         """Download a document file."""
+        # Validate document ID
+        validation_error = self.validate_document_id(pk)
+        if validation_error:
+            return validation_error
+        
         document = self.get_object()
         
         if not document.file_url:
@@ -427,6 +493,11 @@ class DocumentViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=['get'], url_path='view')
     def view(self, request, pk=None):
         """View a document file in browser."""
+        # Validate document ID
+        validation_error = self.validate_document_id(pk)
+        if validation_error:
+            return validation_error
+        
         document = self.get_object()
         
         if not document.file_url:
