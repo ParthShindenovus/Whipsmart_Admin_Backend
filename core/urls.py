@@ -1,8 +1,8 @@
 from django.urls import path, include
-from rest_framework.routers import DefaultRouter
+from core.router import NoFormatSuffixRouter
 from .views import AdminUserViewSet
 
-router = DefaultRouter()
+router = NoFormatSuffixRouter()
 router.register(r'users', AdminUserViewSet, basename='user')
 
 urlpatterns = [

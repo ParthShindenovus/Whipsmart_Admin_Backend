@@ -1,8 +1,8 @@
 from django.urls import path, include
-from rest_framework.routers import DefaultRouter
+from core.router import NoFormatSuffixRouter
 from .views import DocumentViewSet, KnowledgebaseStatsView
 
-router = DefaultRouter()
+router = NoFormatSuffixRouter()
 router.register(r'documents', DocumentViewSet, basename='document')
 
 urlpatterns = [

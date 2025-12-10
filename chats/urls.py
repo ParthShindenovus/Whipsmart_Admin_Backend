@@ -1,8 +1,8 @@
 from django.urls import path, include
-from rest_framework.routers import DefaultRouter
+from core.router import NoFormatSuffixRouter
 from .views import ChatMessageViewSet, SessionViewSet, VisitorViewSet
 
-router = DefaultRouter()
+router = NoFormatSuffixRouter()
 router.register(r'visitors', VisitorViewSet, basename='visitor')
 router.register(r'sessions', SessionViewSet, basename='session')
 router.register(r'messages', ChatMessageViewSet, basename='message')

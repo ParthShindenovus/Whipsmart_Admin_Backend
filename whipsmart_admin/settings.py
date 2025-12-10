@@ -190,6 +190,8 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
     'EXCEPTION_HANDLER': 'core.exceptions.custom_exception_handler',
+    # Disable format suffixes to prevent "Converter already registered" error with multiple routers
+    'URL_FORMAT_OVERRIDE': None,
 }
 
 # JWT Settings

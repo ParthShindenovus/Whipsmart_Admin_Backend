@@ -1,12 +1,12 @@
 from django.urls import path, include
-from rest_framework.routers import DefaultRouter
+from core.router import NoFormatSuffixRouter
 from .views import (
     WidgetAPIKeyViewSet,
     get_widget_config,
     get_embed_code,
 )
 
-router = DefaultRouter()
+router = NoFormatSuffixRouter()
 router.register(r'api-keys', WidgetAPIKeyViewSet, basename='widget-api-key')
 
 urlpatterns = [
