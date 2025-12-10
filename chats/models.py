@@ -39,6 +39,13 @@ class Session(models.Model):
     The id field (UUID) serves as the session identifier.
     Each session is associated with a visitor (auto-created if not provided).
     """
+    CONVERSATION_TYPE_CHOICES = [
+        ('sales', 'Sales'),
+        ('support', 'Support'),
+        ('knowledge', 'Knowledge'),
+        ('routing', 'Routing'),  # Initial state before selection
+    ]
+    
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     visitor = models.ForeignKey(
         Visitor,
@@ -50,6 +57,18 @@ class Session(models.Model):
         blank=False
     )
     external_user_id = models.CharField(max_length=255, null=True, blank=True, db_index=True, help_text="Third-party user ID")
+    conversation_type = models.CharField(
+        max_length=20,
+        choices=CONVERSATION_TYPE_CHOICES,
+        default='routing',
+        db_index=True,
+        help_text="Type of conversation: sales, support, knowledge, or routing"
+    )
+    conversation_data = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Stores conversation-specific data (e.g., name, email, phone for sales/support)"
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField(null=True, blank=True, help_text="Session expiration time (24h default, auto-set if not provided)")
     is_active = models.BooleanField(default=True, db_index=True, help_text="Whether the session is active")
@@ -63,6 +82,7 @@ class Session(models.Model):
             models.Index(fields=['visitor']),
             models.Index(fields=['external_user_id']),
             models.Index(fields=['is_active']),
+            models.Index(fields=['conversation_type']),
         ]
     
     def __str__(self):
@@ -72,6 +92,9 @@ class Session(models.Model):
         """Set default expiration to 24 hours if not provided."""
         if not self.expires_at:
             self.expires_at = timezone.now() + timezone.timedelta(hours=24)
+        # Ensure conversation_type has a default value
+        if not self.conversation_type:
+            self.conversation_type = 'routing'
         super().save(*args, **kwargs)
     
     def is_expired(self):

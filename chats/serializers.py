@@ -53,8 +53,8 @@ class SessionSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = Session
-        fields = ['id', 'visitor_id', 'visitor', 'external_user_id', 'created_at', 
-                  'expires_at', 'is_active', 'metadata']
+        fields = ['id', 'visitor_id', 'visitor', 'external_user_id', 'conversation_type', 
+                  'conversation_data', 'created_at', 'expires_at', 'is_active', 'metadata']
         read_only_fields = ['id', 'visitor', 'created_at']
     
     def validate_visitor_id(self, value):
@@ -74,10 +74,17 @@ class SessionSerializer(serializers.ModelSerializer):
         - id (UUID) is auto-generated as primary key
         - visitor_id is REQUIRED and must exist (validated in validate_visitor_id)
         - expires_at will be set by model's save() method if not provided
+        - conversation_type defaults to 'routing' if not provided
         """
         visitor_id = validated_data.pop('visitor_id')
         visitor = Visitor.objects.get(id=visitor_id)
         validated_data['visitor'] = visitor
+        # Ensure conversation_type has a default value
+        if 'conversation_type' not in validated_data:
+            validated_data['conversation_type'] = 'routing'
+        # Ensure conversation_data has a default value
+        if 'conversation_data' not in validated_data:
+            validated_data['conversation_data'] = {}
         return super().create(validated_data)
 
 
