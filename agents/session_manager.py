@@ -127,6 +127,55 @@ class DjangoSessionManager:
         except Session.DoesNotExist:
             logger.error(f"Session not found when saving user message: {session_id}")
             raise
+    
+    def save_assistant_message(self, session_id: str, message: str, metadata: Optional[Dict] = None):
+        """
+        Save assistant message to database.
+        session_id is the UUID id (primary key) of the Session.
+        """
+        try:
+            # session_id is now the id (UUID primary key)
+            session = Session.objects.get(id=session_id)
+            ChatMessage.objects.create(
+                session=session,
+                message=message,
+                role='assistant',
+                metadata=metadata or {}
+            )
+            logger.info(f"Saved assistant message for session: {session_id}")
+        except Session.DoesNotExist:
+            logger.error(f"Session not found when saving assistant message: {session_id}")
+            raise
+    
+    def get_last_user_message_id(self, session_id: str) -> Optional[str]:
+        """Get the last user message ID for a session."""
+        try:
+            session = Session.objects.get(id=session_id)
+            last_message = ChatMessage.objects.filter(
+                session=session,
+                role='user',
+                is_deleted=False
+            ).order_by('-timestamp').first()
+            return str(last_message.id) if last_message else None
+        except Session.DoesNotExist:
+            return None
+    
+    def get_last_assistant_message_id(self, session_id: str) -> Optional[str]:
+        """Get the last assistant message ID for a session."""
+        try:
+            session = Session.objects.get(id=session_id)
+            last_message = ChatMessage.objects.filter(
+                session=session,
+                role='assistant',
+                is_deleted=False
+            ).order_by('-timestamp').first()
+            return str(last_message.id) if last_message else None
+        except Session.DoesNotExist:
+            return None
+    
+    def save_state(self, session_id: str, state: AgentState):
+        """Alias for save_agent_state for consistency."""
+        return self.save_agent_state(session_id, state)
 
 
 # Global session manager instance
