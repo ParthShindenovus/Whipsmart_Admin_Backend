@@ -16,13 +16,13 @@ class NoFormatSuffixRouter(DefaultRouter):
         Override to skip format_suffix_patterns application.
         This prevents the converter from being registered multiple times.
         """
-        from django.urls import path
+        from django.urls import re_path
         
         urls = []
         
         if self.include_root_view:
             root_view = self.get_api_root_view()
-            root_url = path('', root_view, name=self.root_view_name)
+            root_url = re_path(r'^$', root_view, name=self.root_view_name)
             urls.append(root_url)
         
         for prefix, viewset, basename in self.registry:
@@ -48,7 +48,7 @@ class NoFormatSuffixRouter(DefaultRouter):
                 view = viewset.as_view(mapping, **initkwargs)
                 name = route.name.format(basename=basename)
                 
-                urls.append(path(url_path, view, name=name))
+                urls.append(re_path(url_path, view, name=name))
         
         # Don't apply format_suffix_patterns - this prevents the converter registration error
         return urls
