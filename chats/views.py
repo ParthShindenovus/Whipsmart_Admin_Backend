@@ -16,6 +16,7 @@ from agents.graph import get_graph
 from agents.session_manager import session_manager
 from agents.state import AgentState
 from agents.suggestions import generate_suggestions
+from agents.agent_router import select_agent
 from core.views_base import StandardizedResponseMixin
 from core.utils import success_response, error_response
 from widget.authentication import APIKeyAuthentication
@@ -407,9 +408,9 @@ class ChatMessageViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
             )
         
         # Validate session
-        session, error_response = validate_session(session_id)
-        if error_response:
-            return error_response
+        session, error_response_obj = validate_session(session_id)
+        if error_response_obj:
+            return error_response_obj
         
         # Validate visitor_id matches session's visitor
         if str(session.visitor.id) != str(visitor_id):
@@ -418,58 +419,54 @@ class ChatMessageViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
                 status_code=status.HTTP_403_FORBIDDEN
             )
         
+        # Get conversation_type from request or session
+        conversation_type = request.data.get('conversation_type') or session.conversation_type
+        
+        # Update session conversation_type if provided and different
+        if request.data.get('conversation_type') and session.conversation_type != request.data.get('conversation_type'):
+            session.conversation_type = request.data.get('conversation_type')
+            session.save(update_fields=['conversation_type'])
+        
+        # Validate conversation_type
+        if conversation_type not in ['sales', 'support', 'knowledge']:
+            return error_response(
+                f"Invalid conversation_type. Must be 'sales', 'support', or 'knowledge'.",
+                status_code=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Check if session is already complete (locked)
+        if not session.is_active:
+            return error_response(
+                "This conversation has been completed. Please start a new session.",
+                status_code=status.HTTP_403_FORBIDDEN
+            )
+        
         try:
             logger.info("=" * 80)
-            logger.info(f"[AGENT] AGENT CALLED - Session: {session_id}")
+            logger.info(f"[AGENT] AGENT CALLED - Session: {session_id}, Type: {conversation_type}")
             logger.info(f"[MSG] User Message: {message}")
             logger.info("=" * 80)
             
             # Save user message to database
             session_manager.save_user_message(session_id, message)
             
-            # Get or create agent state from Django session
-            agent_state = session_manager.get_or_create_agent_state(session_id)
-            logger.info(f"[STATS] Loaded agent state with {len(agent_state.messages)} previous messages")
+            # Route to appropriate handler based on conversation_type (MASTER AGENT ROUTER)
+            handler = select_agent(conversation_type, session)
             
-            # Add user message to agent state
-            agent_state.messages.append({
-                "role": "user",
-                "content": message
-            })
+            # Handle message
+            result = handler.handle_message(message)
             
-            # Get the compiled graph
-            graph = get_graph()
-            logger.info("[OK] Agent graph compiled and ready")
+            # Check for escalation (Knowledge → Sales)
+            if result.get('escalate_to') == 'sales':
+                # Refresh session to get updated conversation_type
+                session.refresh_from_db()
+                conversation_type = session.conversation_type
             
-            # Invoke graph with state (convert to dict for LangGraph)
-            state_dict = agent_state.to_dict()
-            logger.info("[SYNC] Invoking agent graph...")
-            final_state_dict = graph.invoke(state_dict)
+            # Save assistant message to database
+            session_manager.save_assistant_message(session_id, result['message'])
             
-            # Convert back to AgentState
-            final_state = AgentState.from_dict(final_state_dict)
-            
-            # Extract final answer
-            final_answer = ""
-            for msg in reversed(final_state.messages):
-                if msg.get("role") == "assistant":
-                    final_answer = msg.get("content", "")
-                    break
-            
-            if not final_answer:
-                # Fallback: try to get from tool_result
-                if isinstance(final_state.tool_result, dict) and final_state.tool_result.get("action") == "final":
-                    final_answer = final_state.tool_result.get("answer", "I'm sorry, I couldn't generate a response.")
-                else:
-                    final_answer = "I'm sorry, I couldn't generate a response."
-            
-            logger.info("=" * 80)
-            logger.info(f"[OK] FINAL ANSWER GENERATED:")
-            logger.info(f"{final_answer}")
-            logger.info("=" * 80)
-            
-            # Save agent state (saves assistant message to database)
-            session_manager.save_agent_state(session_id, final_state)
+            # Refresh session to get updated conversation_data and is_active status
+            session.refresh_from_db()
             
             # Get the saved messages for response
             user_message = ChatMessage.objects.filter(
@@ -484,12 +481,30 @@ class ChatMessageViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
                 is_deleted=False
             ).order_by('-timestamp').first()
             
-            return success_response({
-                'response': final_answer,
-                'session_id': str(session.id),  # Return the id as session_id for API consistency
+            logger.info("=" * 80)
+            logger.info(f"[RESPONSE] Final Answer ({len(result['message'])} chars)")
+            logger.info(f"[INFO] Complete: {result.get('complete', False)}, Needs Info: {result.get('needs_info')}")
+            logger.info(f"[INFO] Escalate To: {result.get('escalate_to')}")
+            logger.info(f"[INFO] Session Active: {session.is_active}")
+            logger.info("=" * 80)
+            
+            response_data = {
+                'response': result['message'],
+                'session_id': str(session.id),
+                'conversation_type': session.conversation_type,  # Use updated type (may have escalated)
+                'conversation_data': session.conversation_data,
+                'complete': result.get('complete', False),
+                'needs_info': result.get('needs_info'),
+                'suggestions': result.get('suggestions', []),
                 'message_id': str(user_message.id) if user_message else None,
                 'response_id': str(assistant_message.id) if assistant_message else None
-            })
+            }
+            
+            # Add escalation info if applicable
+            if result.get('escalate_to'):
+                response_data['escalated_to'] = result.get('escalate_to')
+            
+            return success_response(response_data)
             
         except Exception as e:
             logger.error(f"Error in chat endpoint: {str(e)}", exc_info=True)
