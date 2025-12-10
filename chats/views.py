@@ -1,20 +1,43 @@
 from rest_framework import viewsets, filters, status, views
-from rest_framework.decorators import action
+from rest_framework.decorators import action, authentication_classes
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
+from rest_framework.authentication import BaseAuthentication
 from django_filters.rest_framework import DjangoFilterBackend
 from drf_spectacular.utils import extend_schema_view, extend_schema
-from django.http import StreamingHttpResponse
+from django.http import StreamingHttpResponse, Http404
 from django.utils import timezone
 import json
 import logging
-from .models import ChatMessage, Session
-from .serializers import ChatMessageSerializer, SessionSerializer, ChatRequestSerializer
+from .models import ChatMessage, Session, Visitor
+from .serializers import ChatMessageSerializer, SessionSerializer, ChatRequestSerializer, VisitorSerializer
 from agents.graph import get_graph
 from agents.session_manager import session_manager
 from agents.state import AgentState
 from core.views_base import StandardizedResponseMixin
 from core.utils import success_response, error_response
+from widget.authentication import APIKeyAuthentication
+from widget.permissions import RequiresAPIKey
+
+
+class NoAuthentication(BaseAuthentication):
+    """
+    Authentication class that does nothing - allows all requests without authentication.
+    Used for public endpoints like session creation.
+    
+    Returns None to indicate no authentication was attempted.
+    This prevents DRF from trying other authentication classes.
+    """
+    def authenticate(self, request):
+        # Return None to indicate no authentication attempted
+        # This prevents DRF from trying default authentication classes
+        return None
+    
+    def authenticate_header(self, request):
+        """
+        Return None to indicate no authentication header is required.
+        """
+        return None
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +73,12 @@ def validate_session(session_id):
 @extend_schema_view(
     list=extend_schema(
         summary="List all chat sessions",
-        description="Retrieve a list of all chat sessions. No authentication required. No user_id needed.",
+        description="Retrieve a list of all chat sessions. No authentication required. Sessions are automatically associated with visitors.",
         tags=['Sessions'],
     ),
     create=extend_schema(
-        summary="Create new chat session",
-        description="Create a new chat session. Session ID will be auto-generated if not provided. No user_id required.",
+        summary="Create new chat session (STEP 2)",
+        description="Create a new chat session. visitor_id is REQUIRED - must be created first via POST /api/chats/visitors/. Session ID will be auto-generated. No user_id required.",
         tags=['Sessions'],
     ),
     retrieve=extend_schema(
@@ -75,15 +98,117 @@ class SessionViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
     """
     ViewSet for Session model.
     
-    Manages chat sessions. Sessions are independent and do not require admin authentication or user_id.
+    Manages chat sessions. visitor_id is REQUIRED - must be created first via POST /api/chats/visitors/.
+    Sessions are independent and do not require admin authentication or user_id.
+    
+    FLOW:
+    1. POST /api/chats/visitors/ to create visitor (returns visitor_id)
+    2. POST /api/chats/sessions/ with visitor_id to create session (returns session_id)
+    3. Use session_id and visitor_id to send chat messages
+    
     Provides CRUD operations: Create, Read, Delete, List.
     """
     queryset = Session.objects.all()
     serializer_class = SessionSerializer
+    authentication_classes = []  # No authentication - completely public endpoint (empty list disables all auth)
     permission_classes = [AllowAny]  # Sessions are public, no admin required, no user_id needed
     search_fields = ['external_user_id']
-    filterset_fields = ['is_active', 'external_user_id']
+    filterset_fields = ['is_active', 'external_user_id', 'visitor']
     ordering = ['-created_at']
+    
+    def get_authenticators(self):
+        """
+        Override to return empty list - no authentication for session endpoints.
+        This prevents DRF from using default authentication classes.
+        """
+        return []
+
+
+@extend_schema_view(
+    list=extend_schema(
+        summary="List all visitors",
+        description="Retrieve a list of all visitors. No authentication required.",
+        tags=['Visitors'],
+    ),
+    create=extend_schema(
+        summary="Create new visitor (STEP 1)",
+        description="Create a new visitor. Visitor ID is auto-generated (UUID). No input required from client. This is the FIRST step - you must create a visitor before creating sessions or sending chat messages.",
+        tags=['Visitors'],
+    ),
+    retrieve=extend_schema(
+        summary="Get visitor details",
+        description="Retrieve detailed information about a specific visitor, including all their sessions.",
+        tags=['Visitors'],
+    ),
+    update=extend_schema(exclude=True),  # Hide update endpoint
+    partial_update=extend_schema(exclude=True),  # Hide partial update endpoint
+    destroy=extend_schema(exclude=True),  # Hide delete endpoint
+)
+class VisitorViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
+    """
+    ViewSet for Visitor model.
+    
+    Manages visitors. Visitor IDs are auto-generated UUIDs created by the backend.
+    No input required from client - just POST to create a new visitor.
+    
+    FLOW: 
+    1. POST /api/chats/visitors/ to create visitor (returns visitor_id)
+    2. Use visitor_id to create sessions and send chat messages
+    
+    Provides operations: Create, Read, List, Validate.
+    """
+    queryset = Visitor.objects.all()
+    serializer_class = VisitorSerializer
+    authentication_classes = []  # No authentication - completely public endpoint
+    permission_classes = [AllowAny]  # Visitors are public, no admin required
+    ordering = ['-created_at']
+    
+    def get_authenticators(self):
+        """
+        Override to return empty list - no authentication for visitor endpoints.
+        This prevents DRF from using default authentication classes.
+        """
+        return []
+    
+    def create(self, request, *args, **kwargs):
+        """
+        Create a new visitor.
+        Visitor ID is auto-generated - no input required from client.
+        This is STEP 1 - create visitor before creating sessions.
+        """
+        serializer = self.get_serializer(data=request.data or {})
+        serializer.is_valid(raise_exception=True)
+        visitor = serializer.save()
+        return success_response(
+            VisitorSerializer(visitor).data,
+            message="Visitor created successfully. Use this visitor_id to create sessions and send chat messages.",
+            status_code=status.HTTP_201_CREATED
+        )
+    
+    @extend_schema(
+        summary="Validate visitor ID",
+        description="Check if a visitor ID exists and is valid. Returns visitor details if valid, error if not found.",
+        tags=['Visitors'],
+        responses={200: VisitorSerializer, 404: None}
+    )
+    @action(detail=True, methods=['get'], url_path='validate')
+    def validate_visitor(self, request, pk=None):
+        """
+        Validate that a visitor ID exists.
+        This endpoint can be used to check if a visitor_id is valid before creating sessions.
+        """
+        try:
+            visitor = self.get_object()
+            visitor.update_last_seen()
+            return success_response(
+                VisitorSerializer(visitor).data,
+                message="Visitor ID is valid"
+            )
+        except (Visitor.DoesNotExist, Http404):
+            return error_response(
+                f"Visitor with ID '{pk}' does not exist. Please create a visitor first via POST /api/chats/visitors/",
+                status_code=status.HTTP_404_NOT_FOUND
+            )
 
 
 @extend_schema_view(
@@ -115,12 +240,21 @@ class ChatMessageViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
     """
     queryset = ChatMessage.objects.filter(is_deleted=False, role__in=['user', 'assistant'])
     serializer_class = ChatMessageSerializer
-    permission_classes = [AllowAny]  # Chat messages are public, no user_id needed
+    authentication_classes = []  # Default: no auth (for list/retrieve endpoints)
+    permission_classes = [AllowAny]  # Default: allow any (for list/retrieve endpoints)
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['role']  # Only allow filtering by role, session_id handled in get_queryset
     search_fields = ['message']
     ordering = ['timestamp']
     pagination_class = None  # Disable pagination to return all messages for a session
+    
+    def get_authenticators(self):
+        """
+        Override to return empty list for list/retrieve endpoints.
+        Chat endpoints (chat, chat/stream) override this with APIKeyAuthentication via decorator.
+        """
+        # For list/retrieve, no authentication needed
+        return []
     
     def get_queryset(self):
         """
@@ -220,8 +354,8 @@ class ChatMessageViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
         instance.save()
     
     @extend_schema(
-        summary="Non-streaming chat",
-        description="Send a chat message and receive a response. session_id is required. Response is returned as complete message. Session ID must be valid, active, and not expired.",
+        summary="Non-streaming chat (STEP 3)",
+        description="Send a chat message and receive a response. Requires API key authentication (X-API-Key header or Authorization: Bearer <api-key>). visitor_id and session_id are REQUIRED. Response is returned as complete message. Session ID must be valid, active, and not expired. Visitor ID must match the session's visitor.",
         request=ChatRequestSerializer,
         responses={
             200: {
@@ -233,30 +367,54 @@ class ChatMessageViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
                     'response_id': {'type': 'string'}
                 }
             },
-            400: {'description': 'Bad request - message or session_id missing'},
-            403: {'description': 'Forbidden - session is inactive or expired'},
-            404: {'description': 'Not found - session does not exist'}
+            400: {'description': 'Bad request - message, session_id, or visitor_id missing'},
+            403: {'description': 'Forbidden - session is inactive or expired, or visitor_id mismatch'},
+            404: {'description': 'Not found - session or visitor does not exist'}
         },
         tags=['Messages'],
     )
-    @action(detail=False, methods=['post'], url_path='chat')
+    @action(detail=False, methods=['post'], url_path='chat', 
+            authentication_classes=[APIKeyAuthentication],
+            permission_classes=[RequiresAPIKey])
     def chat(self, request):
         """
         Non-streaming chat endpoint.
-        Receives user message and session_id, returns complete assistant response.
+        Receives user message, session_id, and visitor_id, returns complete assistant response.
         Both messages are permanently stored.
-        Session ID is required and must be valid, active, and not expired.
+        visitor_id and session_id are REQUIRED. Session ID must be valid, active, and not expired.
+        Visitor ID must match the session's visitor.
         """
         message = request.data.get('message')
         session_id = request.data.get('session_id')
+        visitor_id = request.data.get('visitor_id')
         
         if not message:
             return error_response('message is required', status_code=status.HTTP_400_BAD_REQUEST)
+        
+        if not visitor_id:
+            return error_response('visitor_id is required', status_code=status.HTTP_400_BAD_REQUEST)
+        
+        # Validate visitor exists
+        try:
+            visitor = Visitor.objects.get(id=visitor_id)
+            visitor.update_last_seen()
+        except Visitor.DoesNotExist:
+            return error_response(
+                f"Visitor with ID '{visitor_id}' does not exist. Please create a visitor first via POST /api/chats/visitors/",
+                status_code=status.HTTP_404_NOT_FOUND
+            )
         
         # Validate session
         session, error_response = validate_session(session_id)
         if error_response:
             return error_response
+        
+        # Validate visitor_id matches session's visitor
+        if str(session.visitor.id) != str(visitor_id):
+            return error_response(
+                f"Visitor ID '{visitor_id}' does not match the session's visitor ID '{session.visitor.id}'",
+                status_code=status.HTTP_403_FORBIDDEN
+            )
         
         try:
             logger.info("=" * 80)
@@ -339,8 +497,8 @@ class ChatMessageViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
             )
     
     @extend_schema(
-        summary="Streaming chat (SSE)",
-        description="Send a chat message and receive streaming response via Server-Sent Events (SSE). session_id is required. Session ID must be valid, active, and not expired.",
+        summary="Streaming chat (SSE) (STEP 3)",
+        description="Send a chat message and receive streaming response via Server-Sent Events (SSE). Requires API key authentication (X-API-Key header or Authorization: Bearer <api-key>). visitor_id and session_id are REQUIRED. Session ID must be valid, active, and not expired. Visitor ID must match the session's visitor.",
         request=ChatRequestSerializer,
         responses={
             200: {
@@ -354,30 +512,54 @@ class ChatMessageViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
                     }
                 }
             },
-            400: {'description': 'Bad request - message or session_id missing'},
-            403: {'description': 'Forbidden - session is inactive or expired'},
-            404: {'description': 'Not found - session does not exist'}
+            400: {'description': 'Bad request - message, session_id, or visitor_id missing'},
+            403: {'description': 'Forbidden - session is inactive or expired, or visitor_id mismatch'},
+            404: {'description': 'Not found - session or visitor does not exist'}
         },
         tags=['Messages'],
     )
-    @action(detail=False, methods=['post'], url_path='chat/stream')
+    @action(detail=False, methods=['post'], url_path='chat/stream',
+            authentication_classes=[APIKeyAuthentication],
+            permission_classes=[RequiresAPIKey])
     def chat_stream(self, request):
         """
         Streaming chat endpoint using Server-Sent Events (SSE).
-        Receives user message and session_id, streams assistant response.
+        Receives user message, session_id, and visitor_id, streams assistant response.
         Both messages are permanently stored.
-        Session ID is required and must be valid, active, and not expired.
+        visitor_id and session_id are REQUIRED. Session ID must be valid, active, and not expired.
+        Visitor ID must match the session's visitor.
         """
         message = request.data.get('message')
         session_id = request.data.get('session_id')
+        visitor_id = request.data.get('visitor_id')
         
         if not message:
             return error_response('message is required', status_code=status.HTTP_400_BAD_REQUEST)
+        
+        if not visitor_id:
+            return error_response('visitor_id is required', status_code=status.HTTP_400_BAD_REQUEST)
+        
+        # Validate visitor exists
+        try:
+            visitor = Visitor.objects.get(id=visitor_id)
+            visitor.update_last_seen()
+        except Visitor.DoesNotExist:
+            return error_response(
+                f"Visitor with ID '{visitor_id}' does not exist. Please create a visitor first via POST /api/chats/visitors/",
+                status_code=status.HTTP_404_NOT_FOUND
+            )
         
         # Validate session
         session, error_response = validate_session(session_id)
         if error_response:
             return error_response
+        
+        # Validate visitor_id matches session's visitor
+        if str(session.visitor.id) != str(visitor_id):
+            return error_response(
+                f"Visitor ID '{visitor_id}' does not match the session's visitor ID '{session.visitor.id}'",
+                status_code=status.HTTP_403_FORBIDDEN
+            )
         
         try:
             logger.info("=" * 80)

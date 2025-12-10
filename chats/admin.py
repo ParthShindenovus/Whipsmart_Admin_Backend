@@ -1,15 +1,30 @@
 from django.contrib import admin
-from .models import Session, ChatMessage
+from .models import Session, ChatMessage, Visitor
+
+
+@admin.register(Visitor)
+class VisitorAdmin(admin.ModelAdmin):
+    """Admin interface for Visitor model."""
+    list_display = ['id', 'created_at', 'last_seen_at', 'session_count']
+    list_filter = ['created_at', 'last_seen_at']
+    search_fields = ['id']
+    readonly_fields = ['id', 'created_at', 'last_seen_at']
+    date_hierarchy = 'created_at'
+    
+    def session_count(self, obj):
+        return obj.sessions.count()
+    session_count.short_description = 'Sessions'
 
 
 @admin.register(Session)
 class SessionAdmin(admin.ModelAdmin):
     """Admin interface for Session model."""
-    list_display = ['id', 'external_user_id', 'is_active', 'expires_at', 'created_at', 'is_expired']
-    list_filter = ['is_active', 'expires_at', 'created_at']
-    search_fields = ['id', 'external_user_id']
+    list_display = ['id', 'visitor', 'external_user_id', 'is_active', 'expires_at', 'created_at', 'is_expired']
+    list_filter = ['is_active', 'expires_at', 'created_at', 'visitor']
+    search_fields = ['id', 'external_user_id', 'visitor__id']
     readonly_fields = ['id', 'created_at']
     date_hierarchy = 'created_at'
+    raw_id_fields = ['visitor']
     
     def is_expired(self, obj):
         return obj.is_expired()

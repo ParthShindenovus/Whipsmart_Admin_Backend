@@ -20,12 +20,8 @@ def success_response(data=None, message=None, status_code=status.HTTP_200_OK):
     response_data = {"success": True}
     
     if data is not None:
-        if isinstance(data, dict):
-            # Merge data into response
-            response_data.update(data)
-        else:
-            # Wrap in data key
-            response_data["data"] = data
+        # Always wrap data in 'data' key for consistency
+        response_data["data"] = data
     
     if message:
         response_data["message"] = message

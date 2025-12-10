@@ -55,11 +55,13 @@ INSTALLED_APPS = [
     'core',
     'knowledgebase',
     'chats',
+    'widget',
 ]
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'corsheaders.middleware.CorsMiddleware',  # CORS middleware should be early
+    'widget.middleware.APIKeyAuthenticationMiddleware',  # API key authentication for widget endpoints
     'core.middleware.DisableCSRFForAPI',  # Disable CSRF for API endpoints
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -247,12 +249,15 @@ SPECTACULAR_SETTINGS = {
     'TAGS': [
         {'name': 'Authentication', 'description': 'Admin user authentication endpoints'},
         {'name': 'Users', 'description': 'Admin user management'},
-        {'name': 'Sessions', 'description': 'Chat session management (part of chats module)'},
-        {'name': 'Messages', 'description': 'Chat message management (part of chats module)'},
+        {'name': 'Visitors', 'description': 'Visitor ID management - STEP 1: Create visitor before creating sessions'},
+        {'name': 'Sessions', 'description': 'Chat session management - STEP 2: Create session with visitor_id'},
+        {'name': 'Messages', 'description': 'Chat message management - STEP 3: Send messages with visitor_id and session_id'},
         {'name': 'Documents', 'description': 'Document upload and management'},
         {'name': 'Knowledgebase', 'description': 'Knowledgebase statistics and utilities'},
+        {'name': 'Widget API Keys', 'description': 'Widget API key management endpoints'},
+        {'name': 'Widget', 'description': 'Widget configuration and embed code endpoints'},
     ],
-    'TAG_ORDER': ['Authentication', 'Users', 'Sessions', 'Messages', 'Documents', 'Knowledgebase'],
+    'TAG_ORDER': ['Authentication', 'Users', 'Visitors', 'Sessions', 'Messages', 'Documents', 'Knowledgebase', 'Widget API Keys', 'Widget'],
 }
 
 # CORS settings - Allow all origins
@@ -286,6 +291,7 @@ CORS_ALLOW_HEADERS = [
     'user-agent',
     'x-csrftoken',
     'x-requested-with',
+    'x-api-key',  # Widget API key authentication header
 ]
 
 # CSRF settings - Allow all origins for development
@@ -402,5 +408,46 @@ LOGGING = {
             'level': 'INFO',
             'propagate': False,
         },
+        'widget': {
+            'handlers': ['console', 'file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
     },
 }
+
+# Widget API Key Configuration
+API_KEY_PREFIX_LIVE = config('API_KEY_PREFIX_LIVE', default='sk_live_')
+API_KEY_PREFIX_TEST = config('API_KEY_PREFIX_TEST', default='sk_test_')
+API_KEY_MIN_LENGTH = config('API_KEY_MIN_LENGTH', default=32, cast=int)
+API_KEY_HASH_ROUNDS = config('API_KEY_HASH_ROUNDS', default=12, cast=int)
+
+# Widget CDN URLs
+WIDGET_CDN_URL = config('WIDGET_CDN_URL', default='https://cdn.yourdomain.com/widget')
+WIDGET_LOADER_URL = config('WIDGET_LOADER_URL', default='https://cdn.yourdomain.com/widget-loader.js')
+WIDGET_API_URL = config('WIDGET_API_URL', default='https://api.yourdomain.com')
+
+# Rate Limiting Configuration
+RATE_LIMIT_WIDGET_CONFIG = config('RATE_LIMIT_WIDGET_CONFIG', default=100, cast=int)  # per hour
+RATE_LIMIT_CHAT_API = config('RATE_LIMIT_CHAT_API', default=1000, cast=int)  # per hour
+RATE_LIMIT_MESSAGES = config('RATE_LIMIT_MESSAGES', default=100, cast=int)  # per minute
+
+# Cache Configuration (for rate limiting)
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'unique-snowflake',
+        'TIMEOUT': 3600,  # Default timeout: 1 hour
+        'OPTIONS': {
+            'MAX_ENTRIES': 10000
+        }
+    }
+}
+
+# For production, use Redis instead:
+# CACHES = {
+#     'default': {
+#         'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+#         'LOCATION': config('REDIS_URL', default='redis://127.0.0.1:6379/1'),
+#     }
+# }
