@@ -2,6 +2,7 @@
 Utility functions for agent operations.
 """
 import re
+from agents.alex_greetings import get_full_alex_greeting
 
 
 def is_greeting(message: str) -> bool:
@@ -48,22 +49,22 @@ def is_greeting(message: str) -> bool:
 
 def get_greeting_response(message: str) -> str:
     """
-    Generate an appropriate response for greetings and common statements.
+    Generate an appropriate response for greetings and common statements with Australian accent.
     
     Args:
         message: User's message text
         
     Returns:
-        Appropriate response string
+        Appropriate response string with Australian accent
     """
     message_lower = message.lower().strip()
     message_clean = re.sub(r'[^\w\s]', '', message_lower)
     
-    # Greeting responses
+    # Greeting responses with Australian accent
     if re.match(r'^(hi|hello|hey|greetings|good morning|good afternoon|good evening|good day|hi there|hello there)', message_clean):
-        return """Hello! 👋 I'm the WhipSmart Assistant, and I'm here to help you with everything related to electric vehicle leasing and novated leases.
+        return """G'day! 👋 I'm Alex AI, your friendly assistant here at WhipSmart. I'm here to help you with everything related to electric vehicle leasing and novated leases.
 
-I can assist you with:
+I can help you with:
 • Understanding novated leases and how they work
 • Electric vehicle (EV) leasing options and processes
 • Tax benefits and FBT exemptions
@@ -74,23 +75,23 @@ I can assist you with:
 
 What would you like to know about EV leasing or novated leases?"""
     
-    # Thank you responses
+    # Thank you responses with Australian accent
     elif re.match(r'^(thanks|thank you|thx|ty|appreciate it)', message_clean):
-        return """You're welcome! 😊 I'm happy to help. If you have any other questions about WhipSmart's EV leasing services or novated leases, feel free to ask!"""
+        return """No worries! 😊 Happy to help, mate. If you've got any other questions about WhipSmart's EV leasing services or novated leases, feel free to ask!"""
     
-    # Goodbye responses
+    # Goodbye responses with Australian accent
     elif re.match(r'^(bye|goodbye|see you|farewell|have a good day|take care)', message_clean):
-        return """Goodbye! 👋 Feel free to come back anytime if you have questions about WhipSmart's electric vehicle leasing services or novated leases. Have a great day!"""
+        return """Cheers! 👋 Feel free to come back anytime if you've got questions about WhipSmart's electric vehicle leasing services or novated leases. Have a ripper day!"""
     
-    # Acknowledgment responses
+    # Acknowledgment responses with Australian accent
     elif re.match(r'^(ok|okay|alright|sure|got it|understood)', message_clean):
-        return """Great! Is there anything else you'd like to know about WhipSmart's EV leasing services or novated leases?"""
+        return """Too easy! Is there anything else you'd like to know about WhipSmart's EV leasing services or novated leases?"""
     
-    # Default greeting response
+    # Default greeting response with Australian accent
     else:
-        return """Hello! 👋 I'm the WhipSmart Assistant, and I'm here to help you with everything related to electric vehicle leasing and novated leases.
+        return """G'day! 👋 I'm Alex AI, your friendly assistant here at WhipSmart. I'm here to help you with everything related to electric vehicle leasing and novated leases.
 
-I can assist you with:
+I can help you with:
 • Understanding novated leases and how they work
 • Electric vehicle (EV) leasing options and processes
 • Tax benefits and FBT exemptions

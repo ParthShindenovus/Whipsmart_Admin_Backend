@@ -155,13 +155,18 @@ class SessionViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
     
     def create(self, request, *args, **kwargs):
         """
-        Create a new session. No initial message - unified agent handles all interactions.
+        Create a new session with initial Alex AI greeting message.
         """
         serializer = self.get_serializer(data=request.data or {})
         serializer.is_valid(raise_exception=True)
         session = serializer.save()
         
-        # No initial message - unified agent will greet naturally when user sends first message
+        # Create initial greeting message from Alex AI
+        from agents.alex_greetings import get_full_alex_greeting
+        from agents.session_manager import session_manager
+        
+        initial_greeting = get_full_alex_greeting()
+        session_manager.save_assistant_message(str(session.id), initial_greeting)
         
         return success_response(
             serializer.data,
