@@ -76,7 +76,16 @@ def validate_session(session_id):
 @extend_schema_view(
     list=extend_schema(
         summary="List all chat sessions",
-        description="Retrieve a list of all chat sessions. No authentication required. Sessions are automatically associated with visitors.",
+        description="Retrieve a list of all chat sessions. No authentication required. Sessions are automatically associated with visitors. Filter by visitor_id using query parameter: ?visitor_id=<uuid>",
+        parameters=[
+            OpenApiParameter(
+                name='visitor_id',
+                type=OpenApiTypes.UUID,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description='Filter sessions by visitor ID'
+            ),
+        ],
         tags=['Sessions'],
     ),
     create=extend_schema(
@@ -118,6 +127,24 @@ class SessionViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
     search_fields = ['external_user_id']
     filterset_fields = ['is_active', 'external_user_id', 'visitor']
     ordering = ['-created_at']
+    
+    def get_queryset(self):
+        """
+        Filter sessions by visitor_id if provided in query parameters.
+        Supports both 'visitor_id' and 'visitor' query parameters.
+        """
+        queryset = super().get_queryset()
+        
+        # Support visitor_id query parameter
+        visitor_id = self.request.query_params.get('visitor_id')
+        if visitor_id:
+            try:
+                queryset = queryset.filter(visitor_id=visitor_id)
+            except (ValueError, Exception) as e:
+                logger.warning(f"[SESSIONS] Invalid visitor_id format: {visitor_id}, error: {str(e)}")
+                queryset = queryset.none()
+        
+        return queryset
     
     def get_authenticators(self):
         """
