@@ -120,7 +120,7 @@ class SessionViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
     
     Provides CRUD operations: Create, Read, Delete, List.
     """
-    queryset = Session.objects.all()
+    queryset = Session.objects.select_related('visitor').all()
     serializer_class = SessionSerializer
     authentication_classes = []  # No authentication - completely public endpoint (empty list disables all auth)
     permission_classes = [AllowAny]  # Sessions are public, no admin required, no user_id needed
@@ -156,17 +156,39 @@ class SessionViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
     def create(self, request, *args, **kwargs):
         """
         Create a new session with initial Alex AI greeting message.
+        Optimized for fast session creation - uses bulk operations and avoids extra queries.
         """
         serializer = self.get_serializer(data=request.data or {})
         serializer.is_valid(raise_exception=True)
         session = serializer.save()
         
-        # Create initial greeting message from Alex AI
+        # Create initial greeting message using bulk_create for better performance
         from agents.alex_greetings import get_full_alex_greeting
-        from agents.session_manager import session_manager
+        from chats.models import ChatMessage
+        from django.utils import timezone
+        from django.db import transaction
         
         initial_greeting = get_full_alex_greeting()
-        session_manager.save_assistant_message(str(session.id), initial_greeting)
+        now = timezone.now()
+        
+        # Use bulk_create to avoid triggering individual save() methods (much faster)
+        # Then update session's last_message in a single operation
+        with transaction.atomic():
+            ChatMessage.objects.bulk_create([
+                ChatMessage(
+                    session=session,
+                    message=initial_greeting,
+                    role='assistant',
+                    metadata={},
+                    timestamp=now
+                )
+            ], ignore_conflicts=False)
+            
+            # Update session's last_message in a single optimized operation
+            Session.objects.filter(id=session.id).update(
+                last_message=initial_greeting[:500],
+                last_message_at=now
+            )
         
         return success_response(
             serializer.data,
@@ -289,7 +311,7 @@ class ChatMessageViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
     Manages chat messages within sessions. All messages must have session_id.
     Messages are permanently stored. No user_id required.
     """
-    queryset = ChatMessage.objects.filter(is_deleted=False, role__in=['user', 'assistant'])
+    queryset = ChatMessage.objects.filter(is_deleted=False, role__in=['user', 'assistant']).select_related('session')
     serializer_class = ChatMessageSerializer
     authentication_classes = []  # Default: no auth (for list/retrieve endpoints)
     permission_classes = [AllowAny]  # Default: allow any (for list/retrieve endpoints)
@@ -311,6 +333,7 @@ class ChatMessageViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
         """
         Filter messages by session_id if provided in query params.
         Only returns user and assistant messages (excludes system messages).
+        Optimized for performance - removed unnecessary queries.
         """
         queryset = super().get_queryset()
         
@@ -319,42 +342,17 @@ class ChatMessageViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
         
         if session_id:
             try:
-                # Validate session exists first
-                session = Session.objects.get(id=session_id)
-                
-                # Filter directly by session_id (UUID) - use ForeignKey lookup
+                # Filter directly by session_id (UUID) - optimized, no extra validation query
                 # Use session__id to filter by the id field of the related Session
-                queryset = queryset.filter(session__id=session_id)
+                queryset = queryset.filter(session__id=session_id).select_related('session')
                 
-                # Log for debugging
-                total_count = queryset.count()
-                user_count = queryset.filter(role='user').count()
-                assistant_count = queryset.filter(role='assistant').count()
-                logger.info(f"[MESSAGES] Found {total_count} messages for session_id: {session_id} (user: {user_count}, assistant: {assistant_count})")
+                # Only log in debug mode to avoid performance impact
+                if logger.isEnabledFor(logging.DEBUG):
+                    total_count = queryset.count()
+                    logger.debug(f"[MESSAGES] Found {total_count} messages for session_id: {session_id}")
                 
-                # Verify messages exist in DB directly (bypass queryset filters)
-                all_db_messages = ChatMessage.objects.filter(
-                    session__id=session_id
-                ).order_by('timestamp')
-                
-                db_total = all_db_messages.count()
-                db_not_deleted = all_db_messages.filter(is_deleted=False).count()
-                db_user_assistant = all_db_messages.filter(is_deleted=False, role__in=['user', 'assistant']).count()
-                
-                logger.info(f"[MESSAGES] DB Stats for session_id {session_id}: Total={db_total}, NotDeleted={db_not_deleted}, User/Assistant={db_user_assistant}")
-                
-                # If we're missing messages, log them for debugging
-                if db_user_assistant > total_count:
-                    logger.warning(f"[MESSAGES] Missing {db_user_assistant - total_count} messages! Checking what's filtered out...")
-                    deleted_messages = all_db_messages.filter(is_deleted=True).count()
-                    system_messages = all_db_messages.filter(role='system').count()
-                    logger.warning(f"[MESSAGES] Filtered out: deleted={deleted_messages}, system={system_messages}")
-                
-            except Session.DoesNotExist:
-                logger.warning(f"[MESSAGES] Session not found: {session_id}")
-                queryset = queryset.none()
             except (ValueError, Exception) as e:
-                logger.warning(f"[MESSAGES] Invalid session_id format or error filtering: {session_id}, error: {str(e)}")
+                logger.warning(f"[MESSAGES] Invalid session_id format: {session_id}, error: {str(e)}")
                 queryset = queryset.none()
         else:
             # No session_id provided - log for debugging

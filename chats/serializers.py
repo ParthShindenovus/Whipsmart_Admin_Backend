@@ -62,38 +62,23 @@ class SessionSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'visitor', 'created_at', 'last_message', 'last_message_at']
     
     def get_last_message(self, obj):
-        """Get last_message field, fallback to querying last message if field doesn't exist."""
-        # Try to get from model field first (after migration)
-        if hasattr(obj, 'last_message') and obj.last_message:
-            return obj.last_message
-        # Fallback: query the last message
-        try:
-            last_msg = obj.messages.filter(is_deleted=False).order_by('-timestamp').first()
-            if last_msg:
-                return last_msg.message[:500]  # Limit to 500 chars
-        except Exception:
-            pass
-        return None
+        """Get last_message field - optimized to use model field directly."""
+        # Use model field directly (fast - no DB query)
+        return getattr(obj, 'last_message', None)
     
     def get_last_message_at(self, obj):
-        """Get last_message_at field, fallback to querying last message timestamp if field doesn't exist."""
-        # Try to get from model field first (after migration)
-        if hasattr(obj, 'last_message_at') and obj.last_message_at:
-            return obj.last_message_at
-        # Fallback: query the last message timestamp
-        try:
-            last_msg = obj.messages.filter(is_deleted=False).order_by('-timestamp').first()
-            if last_msg:
-                return last_msg.timestamp
-        except Exception:
-            pass
-        return None
+        """Get last_message_at field - optimized to use model field directly."""
+        # Use model field directly (fast - no DB query)
+        return getattr(obj, 'last_message_at', None)
     
     def validate_visitor_id(self, value):
-        """Validate that visitor exists."""
+        """Validate that visitor exists - optimized with select_related."""
         try:
-            visitor = Visitor.objects.get(id=value)
-            visitor.update_last_seen()
+            # Use exists() for faster validation (doesn't load full object)
+            if not Visitor.objects.filter(id=value).exists():
+                raise Visitor.DoesNotExist
+            # Update last_seen_at using update() for better performance
+            Visitor.objects.filter(id=value).update(last_seen_at=timezone.now())
             return value
         except Visitor.DoesNotExist:
             raise serializers.ValidationError(
@@ -102,14 +87,15 @@ class SessionSerializer(serializers.ModelSerializer):
     
     def create(self, validated_data):
         """
-        Create session. 
+        Create session - optimized for performance.
         - id (UUID) is auto-generated as primary key
         - visitor_id is REQUIRED and must exist (validated in validate_visitor_id)
         - expires_at will be set by model's save() method if not provided
         - conversation_data defaults to empty dict if not provided
         """
         visitor_id = validated_data.pop('visitor_id')
-        visitor = Visitor.objects.get(id=visitor_id)
+        # Use only() to fetch only needed fields for better performance
+        visitor = Visitor.objects.only('id').get(id=visitor_id)
         validated_data['visitor'] = visitor
         
         # Ensure conversation_data has a default value
