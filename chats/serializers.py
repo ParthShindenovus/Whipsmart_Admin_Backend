@@ -51,11 +51,43 @@ class SessionSerializer(serializers.ModelSerializer):
     visitor = VisitorSerializer(read_only=True, help_text="Visitor details (read-only)")
     expires_at = serializers.DateTimeField(required=False, allow_null=True, help_text="Expiration time (optional, defaults to 24h from now)")
     
+    last_message = serializers.SerializerMethodField(help_text="Last message in the session (for frontend preview)")
+    last_message_at = serializers.SerializerMethodField(help_text="Timestamp of the last message")
+    
     class Meta:
         model = Session
         fields = ['id', 'visitor_id', 'visitor', 'external_user_id', 
-                  'conversation_data', 'created_at', 'expires_at', 'is_active', 'metadata']
-        read_only_fields = ['id', 'visitor', 'created_at']
+                  'conversation_data', 'created_at', 'expires_at', 'is_active', 
+                  'last_message', 'last_message_at', 'metadata']
+        read_only_fields = ['id', 'visitor', 'created_at', 'last_message', 'last_message_at']
+    
+    def get_last_message(self, obj):
+        """Get last_message field, fallback to querying last message if field doesn't exist."""
+        # Try to get from model field first (after migration)
+        if hasattr(obj, 'last_message') and obj.last_message:
+            return obj.last_message
+        # Fallback: query the last message
+        try:
+            last_msg = obj.messages.filter(is_deleted=False).order_by('-timestamp').first()
+            if last_msg:
+                return last_msg.message[:500]  # Limit to 500 chars
+        except Exception:
+            pass
+        return None
+    
+    def get_last_message_at(self, obj):
+        """Get last_message_at field, fallback to querying last message timestamp if field doesn't exist."""
+        # Try to get from model field first (after migration)
+        if hasattr(obj, 'last_message_at') and obj.last_message_at:
+            return obj.last_message_at
+        # Fallback: query the last message timestamp
+        try:
+            last_msg = obj.messages.filter(is_deleted=False).order_by('-timestamp').first()
+            if last_msg:
+                return last_msg.timestamp
+        except Exception:
+            pass
+        return None
     
     def validate_visitor_id(self, value):
         """Validate that visitor exists."""

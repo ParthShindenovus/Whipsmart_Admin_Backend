@@ -72,6 +72,8 @@ class Session(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField(null=True, blank=True, help_text="Session expiration time (24h default, auto-set if not provided)")
     is_active = models.BooleanField(default=True, db_index=True, help_text="Whether the session is active")
+    last_message = models.TextField(null=True, blank=True, help_text="Last message in the session (for frontend preview)")
+    last_message_at = models.DateTimeField(null=True, blank=True, help_text="Timestamp of the last message")
     metadata = models.JSONField(default=dict, blank=True, help_text="Device info, etc.")
     
     class Meta:
@@ -137,3 +139,12 @@ class ChatMessage(models.Model):
     
     def __str__(self):
         return f"{self.role}: {self.message[:50]}..."
+    
+    def save(self, *args, **kwargs):
+        """Update session's last_message when a message is saved."""
+        super().save(*args, **kwargs)
+        # Update session's last_message field
+        if not self.is_deleted:
+            self.session.last_message = self.message[:500]  # Limit to 500 chars for preview
+            self.session.last_message_at = self.timestamp
+            self.session.save(update_fields=['last_message', 'last_message_at'])
