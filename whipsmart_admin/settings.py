@@ -277,6 +277,18 @@ CORS_ALLOW_HEADERS = [
     'x-api-key',  # Widget API key authentication header
 ]
 
+# CORS settings for static files (JavaScript, CSS, etc.)
+# Note: django-cors-headers applies to views, but for static files served directly,
+# you may need to configure your web server (nginx/Apache) or use WhiteNoise with CORS
+# For widget-loader.js served via views, CORS headers are set explicitly in the view
+CORS_EXPOSE_HEADERS = [
+    'content-type',
+    'content-length',
+    'x-ratelimit-limit',
+    'x-ratelimit-remaining',
+    'x-ratelimit-reset',
+]
+
 # CSRF settings - Allow all origins
 # Note: API endpoints (/api/*) are exempt from CSRF via middleware (using JWT auth)
 # For widget endpoints, we allow all origins

@@ -16,7 +16,7 @@ from agents.graph import get_graph
 from agents.session_manager import session_manager
 from agents.state import AgentState
 from agents.suggestions import generate_suggestions
-from agents.agent_router import select_agent
+from agents.unified_agent import UnifiedAgent
 from core.views_base import StandardizedResponseMixin
 from core.utils import success_response, error_response
 from widget.authentication import APIKeyAuthentication
@@ -128,51 +128,16 @@ class SessionViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
     
     def create(self, request, *args, **kwargs):
         """
-        Create a new session and generate initial message based on conversation_type.
-        
-        For Sales: Asks for name
-        For Support: Asks for name
-        For Knowledge: No initial message
+        Create a new session. No initial message - unified agent handles all interactions.
         """
         serializer = self.get_serializer(data=request.data or {})
         serializer.is_valid(raise_exception=True)
         session = serializer.save()
         
-        # Generate initial message based on conversation_type
-        initial_message = None
-        conversation_type = session.conversation_type
-        
-        if conversation_type == 'sales':
-            initial_message = "Hello! To connect you with our sales team, could you please provide your full name?"
-        elif conversation_type == 'support':
-            initial_message = "Hello! I'm here to help. Could you please provide your full name?"
-        # For 'knowledge' or 'routing', no initial message
-        
-        # Store initial message if generated
-        initial_message_obj = None
-        if initial_message:
-            initial_message_obj = ChatMessage.objects.create(
-                session=session,
-                message=initial_message,
-                role='assistant',
-                metadata={'initial_message': True}
-            )
-            logger.info(f"Created initial message for session {session.id} (type: {conversation_type})")
-        
-        # Prepare response data
-        response_data = serializer.data.copy()
-        if initial_message_obj:
-            response_data['initial_message'] = {
-                'id': str(initial_message_obj.id),
-                'message': initial_message,
-                'role': 'assistant',
-                'timestamp': initial_message_obj.timestamp.isoformat()
-            }
-        else:
-            response_data['initial_message'] = None
+        # No initial message - unified agent will greet naturally when user sends first message
         
         return success_response(
-            response_data,
+            serializer.data,
             message="Session created successfully. Use this session_id to send chat messages.",
             status_code=status.HTTP_201_CREATED
         )
@@ -470,21 +435,6 @@ class ChatMessageViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
                 status_code=status.HTTP_403_FORBIDDEN
             )
         
-        # Get conversation_type from request or session
-        conversation_type = request.data.get('conversation_type') or session.conversation_type
-        
-        # Update session conversation_type if provided and different
-        if request.data.get('conversation_type') and session.conversation_type != request.data.get('conversation_type'):
-            session.conversation_type = request.data.get('conversation_type')
-            session.save(update_fields=['conversation_type'])
-        
-        # Validate conversation_type
-        if conversation_type not in ['sales', 'support', 'knowledge']:
-            return error_response(
-                f"Invalid conversation_type. Must be 'sales', 'support', or 'knowledge'.",
-                status_code=status.HTTP_400_BAD_REQUEST
-            )
-        
         # Check if session is already complete (locked)
         if not session.is_active:
             return error_response(
@@ -494,24 +444,18 @@ class ChatMessageViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
         
         try:
             logger.info("=" * 80)
-            logger.info(f"[AGENT] AGENT CALLED - Session: {session_id}, Type: {conversation_type}")
+            logger.info(f"[UNIFIED AGENT] AGENT CALLED - Session: {session_id}")
             logger.info(f"[MSG] User Message: {message}")
             logger.info("=" * 80)
             
             # Save user message to database
             session_manager.save_user_message(session_id, message)
             
-            # Route to appropriate handler based on conversation_type (MASTER AGENT ROUTER)
-            handler = select_agent(conversation_type, session)
+            # Use unified agent (no conversation_type needed)
+            agent = UnifiedAgent(session)
             
             # Handle message
-            result = handler.handle_message(message)
-            
-            # Check for escalation (Knowledge → Sales)
-            if result.get('escalate_to') == 'sales':
-                # Refresh session to get updated conversation_type
-                session.refresh_from_db()
-                conversation_type = session.conversation_type
+            result = agent.handle_message(message)
             
             # Save assistant message to database
             session_manager.save_assistant_message(session_id, result['message'])
@@ -535,14 +479,12 @@ class ChatMessageViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
             logger.info("=" * 80)
             logger.info(f"[RESPONSE] Final Answer ({len(result['message'])} chars)")
             logger.info(f"[INFO] Complete: {result.get('complete', False)}, Needs Info: {result.get('needs_info')}")
-            logger.info(f"[INFO] Escalate To: {result.get('escalate_to')}")
             logger.info(f"[INFO] Session Active: {session.is_active}")
             logger.info("=" * 80)
             
             response_data = {
                 'response': result['message'],
                 'session_id': str(session.id),
-                'conversation_type': session.conversation_type,  # Use updated type (may have escalated)
                 'conversation_data': session.conversation_data,
                 'complete': result.get('complete', False),
                 'needs_info': result.get('needs_info'),
@@ -550,10 +492,6 @@ class ChatMessageViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
                 'message_id': str(user_message.id) if user_message else None,
                 'response_id': str(assistant_message.id) if assistant_message else None
             }
-            
-            # Add escalation info if applicable
-            if result.get('escalate_to'):
-                response_data['escalated_to'] = result.get('escalate_to')
             
             return success_response(response_data)
             

@@ -335,6 +335,8 @@ def process_document(file_url: str, file_type: str, document_id: str, title: str
         
         # Prepare chunks with metadata (including document_id for easy deletion)
         processed_chunks = []
+        chunk_objects = []
+        
         for idx, chunk in enumerate(chunks):
             chunk_id = f"{document_id}-chunk-{idx}"
             metadata = {
@@ -349,25 +351,36 @@ def process_document(file_url: str, file_type: str, document_id: str, title: str
             }
             processed_chunks.append((chunk, chunk_id, metadata))
             
-            # Save chunk to database if requested
+            # Prepare chunk objects for bulk insert
             if save_to_db and document:
-                DocumentChunk.objects.update_or_create(
-                    document=document,
-                    chunk_id=chunk_id,
-                    defaults={
-                        'chunk_index': idx,
-                        'text': chunk,
-                        'text_length': len(chunk),
-                        'metadata': metadata,
-                    }
+                chunk_objects.append(
+                    DocumentChunk(
+                        document=document,
+                        chunk_id=chunk_id,
+                        chunk_index=idx,
+                        text=chunk,
+                        text_length=len(chunk),
+                        metadata=metadata,
+                    )
                 )
         
-        # Update document state and chunk count
-        if save_to_db and document:
-            document.chunk_count = len(chunks)
-            document.state = 'chunked'
-            document.save(update_fields=['chunk_count', 'state'])
-            logger.info(f"Saved {len(chunks)} chunks to database for document {document_id}")
+        # Save chunks to database using bulk operations (much faster!)
+        if save_to_db and document and chunk_objects:
+            from django.db import transaction
+            
+            with transaction.atomic():
+                # Delete existing chunks first (in case of re-chunking)
+                DocumentChunk.objects.filter(document=document).delete()
+                
+                # Bulk create all chunks in a single query
+                DocumentChunk.objects.bulk_create(chunk_objects, batch_size=500)
+                
+                # Update document state and chunk count
+                document.chunk_count = len(chunks)
+                document.state = 'chunked'
+                document.save(update_fields=['chunk_count', 'state'])
+                
+            logger.info(f"Bulk saved {len(chunks)} chunks to database for document {document_id} (using bulk_create)")
         
         return processed_chunks
     
@@ -481,6 +494,8 @@ def process_url_document(url: str, document_id: str, title: str, save_to_db: boo
         
         # Prepare chunks with metadata (including document_id for easy deletion)
         processed_chunks = []
+        chunk_objects = []
+        
         for idx, heading_chunk in enumerate(heading_chunks):
             chunk_id = f"{document_id}-chunk-{idx}"
             chunk_text = heading_chunk['chunk_text']
@@ -502,25 +517,36 @@ def process_url_document(url: str, document_id: str, title: str, save_to_db: boo
             }
             processed_chunks.append((chunk_text, chunk_id, metadata))
             
-            # Save chunk to database if requested
+            # Prepare chunk objects for bulk insert
             if save_to_db and document:
-                DocumentChunk.objects.update_or_create(
-                    document=document,
-                    chunk_id=chunk_id,
-                    defaults={
-                        'chunk_index': idx,
-                        'text': chunk_text,
-                        'text_length': len(chunk_text),
-                        'metadata': metadata,
-                    }
+                chunk_objects.append(
+                    DocumentChunk(
+                        document=document,
+                        chunk_id=chunk_id,
+                        chunk_index=idx,
+                        text=chunk_text,
+                        text_length=len(chunk_text),
+                        metadata=metadata,
+                    )
                 )
         
-        # Update document state and chunk count
-        if save_to_db and document:
-            document.chunk_count = len(heading_chunks)
-            document.state = 'chunked'
-            document.save(update_fields=['chunk_count', 'state'])
-            logger.info(f"Saved {len(heading_chunks)} topic-based chunks to database for document {document_id}")
+        # Save chunks to database using bulk operations (much faster!)
+        if save_to_db and document and chunk_objects:
+            from django.db import transaction
+            
+            with transaction.atomic():
+                # Delete existing chunks first (in case of re-chunking)
+                DocumentChunk.objects.filter(document=document).delete()
+                
+                # Bulk create all chunks in a single query
+                DocumentChunk.objects.bulk_create(chunk_objects, batch_size=500)
+                
+                # Update document state and chunk count
+                document.chunk_count = len(heading_chunks)
+                document.state = 'chunked'
+                document.save(update_fields=['chunk_count', 'state'])
+                
+            logger.info(f"Bulk saved {len(heading_chunks)} topic-based chunks to database for document {document_id} (using bulk_create)")
         
         return processed_chunks
     

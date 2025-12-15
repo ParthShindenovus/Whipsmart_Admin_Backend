@@ -505,3 +505,93 @@ def get_client_ip(request):
     else:
         ip = request.META.get('REMOTE_ADDR')
     return ip
+
+
+@extend_schema(
+    summary="Serve widget loader script",
+    description="Serves the widget-loader.js script with proper CORS headers to allow cross-origin loading.",
+    responses={200: OpenApiTypes.BINARY},
+    tags=['Widget'],
+)
+@api_view(['GET', 'OPTIONS'])
+@permission_classes([AllowAny])  # Allow public access to widget loader
+def serve_widget_loader(request):
+    """
+    Serve widget-loader.js with proper CORS headers.
+    This endpoint allows the widget script to be loaded from any origin.
+    
+    IMPORTANT: If you're hosting widget-loader.js on a separate server (e.g., chatbot-widget.novuscode.in),
+    that server needs to be configured with CORS headers. For Django servers, use django-cors-headers.
+    For static file servers (nginx, Apache, CDN), configure CORS headers in the server configuration.
+    """
+    from django.conf import settings
+    from django.http import HttpResponse, FileResponse
+    from pathlib import Path
+    
+    # Handle OPTIONS preflight request
+    if request.method == 'OPTIONS':
+        response = HttpResponse()
+        response['Access-Control-Allow-Origin'] = '*'
+        response['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+        response['Access-Control-Allow-Headers'] = 'Content-Type, Origin, Accept, X-API-Key, Authorization'
+        response['Access-Control-Max-Age'] = '3600'
+        return response
+    
+    # Try to find widget-loader.js in static files or a specific location
+    widget_loader_path = None
+    
+    # Check if widget-loader.js exists in static files
+    static_root = getattr(settings, 'STATIC_ROOT', None)
+    if static_root:
+        widget_loader_path = Path(static_root) / 'widget-loader.js'
+        if not widget_loader_path.exists():
+            widget_loader_path = None
+    
+    # If not in static root, check for a widget static directory
+    if not widget_loader_path or not widget_loader_path.exists():
+        widget_static_dir = Path(__file__).parent.parent / 'static' / 'widget'
+        widget_loader_path = widget_static_dir / 'widget-loader.js'
+        if not widget_loader_path.exists():
+            widget_loader_path = None
+    
+    # If file exists, serve it with CORS headers
+    if widget_loader_path and widget_loader_path.exists():
+        try:
+            response = FileResponse(
+                open(widget_loader_path, 'rb'),
+                content_type='application/javascript; charset=utf-8'
+            )
+        except Exception as e:
+            return error_response(
+                message=f"Error reading widget-loader.js: {str(e)}",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    else:
+        # If file doesn't exist, return a minimal loader script that redirects to CDN
+        widget_loader_url = getattr(settings, 'WIDGET_LOADER_URL', 'https://cdn.yourdomain.com/widget-loader.js')
+        
+        # Return a simple loader script that loads from CDN
+        loader_script = f'''// WhipSmart Widget Loader
+// This file should be replaced with the actual widget-loader.js
+// For now, redirecting to CDN: {widget_loader_url}
+
+(function() {{
+    var script = document.createElement('script');
+    script.src = '{widget_loader_url}';
+    script.async = true;
+    document.head.appendChild(script);
+}})();
+'''
+        response = HttpResponse(loader_script, content_type='application/javascript; charset=utf-8')
+    
+    # Set CORS headers explicitly for JavaScript files
+    # These headers allow the script to be loaded from any origin
+    response['Access-Control-Allow-Origin'] = '*'
+    response['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    response['Access-Control-Allow-Headers'] = 'Content-Type, Origin, Accept, X-API-Key, Authorization'
+    response['Access-Control-Max-Age'] = '3600'
+    
+    # Cache control for better performance
+    response['Cache-Control'] = 'public, max-age=3600'  # Cache for 1 hour
+    
+    return response

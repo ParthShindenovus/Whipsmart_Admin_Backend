@@ -45,6 +45,8 @@ def _get_openai_client():
 
 SUGGESTIONS_PROMPT = """You are generating contextual suggestion questions for a chat interface. These are quick-reply buttons that users can click to continue the conversation.
 
+PRIMARY GOAL: Generate suggestions that guide users toward connecting with WhipSmart's team.
+
 Conversation Context:
 {conversation_context}
 
@@ -53,19 +55,24 @@ Last Bot Message:
 
 INSTRUCTIONS:
 1. Generate 3-5 short, relevant suggestion questions based on the conversation context
-2. Suggestions should be:
+2. PRIORITIZE conversion-focused suggestions:
+   - "Connect with our team" or "Get started" should be included when user shows interest
+   - After answering questions, include suggestions like "I'd like to learn more" or "Connect with your team"
+3. Suggestions should be:
    - Short (max 10-12 words each)
    - Contextually relevant to the last bot message and conversation
    - Natural follow-up questions or related topics
    - Specific to WhipSmart's EV leasing services, novated leases, or related topics
-3. If the conversation is just starting (greeting), suggest common topics users might ask about
-4. If the bot just answered a question, suggest related follow-up questions
-5. If the conversation has no context or is unclear, return empty array
+   - Conversion-focused when appropriate (guide users to connect with team)
+4. If the conversation is just starting (greeting), suggest common topics users might ask about
+5. If the bot just answered a question, suggest related follow-up questions AND include conversion suggestions
+6. If user shows interest (asks about pricing, benefits, getting started), prioritize "Connect with our team" suggestions
 
 EXAMPLES:
-- If bot says "Hello! I can help with EV leasing...", suggest: ["What is a novated lease?", "How does FBT exemption work?", "What EVs are available?"]
-- If bot explains novated leases, suggest: ["What are the tax benefits?", "How do I apply?", "What vehicles can I lease?"]
-- If bot explains FBT, suggest: ["Which vehicles qualify?", "How much can I save?", "What are the requirements?"]
+- If bot says "Hello! I can help with EV leasing...", suggest: ["What is a novated lease?", "How does FBT exemption work?", "Connect with our team"]
+- If bot explains novated leases, suggest: ["What are the tax benefits?", "Connect with our team to explore options", "How do I apply?"]
+- If bot explains FBT, suggest: ["Which vehicles qualify?", "Connect with our team", "How much can I save?"]
+- If user asks about pricing/benefits, suggest: ["Connect with our team to get started", "I'd like to learn more", "Tell me more about your services"]
 
 RESPOND WITH JSON ONLY:
 {{

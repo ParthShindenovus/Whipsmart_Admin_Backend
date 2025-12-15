@@ -33,11 +33,6 @@ class ChatRequestSerializer(serializers.Serializer):
         required=True,
         help_text="Visitor ID (required). Must match the visitor associated with the session."
     )
-    conversation_type = serializers.ChoiceField(
-        choices=['sales', 'support', 'knowledge'],
-        required=False,
-        help_text="Conversation type: 'sales', 'support', or 'knowledge'. If not provided, uses session's conversation_type."
-    )
 
 
 class SessionSerializer(serializers.ModelSerializer):
@@ -58,7 +53,7 @@ class SessionSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = Session
-        fields = ['id', 'visitor_id', 'visitor', 'external_user_id', 'conversation_type', 
+        fields = ['id', 'visitor_id', 'visitor', 'external_user_id', 
                   'conversation_data', 'created_at', 'expires_at', 'is_active', 'metadata']
         read_only_fields = ['id', 'visitor', 'created_at']
     
@@ -79,21 +74,11 @@ class SessionSerializer(serializers.ModelSerializer):
         - id (UUID) is auto-generated as primary key
         - visitor_id is REQUIRED and must exist (validated in validate_visitor_id)
         - expires_at will be set by model's save() method if not provided
-        - conversation_type defaults to 'routing' if not provided
-        - conversation_type can be set to 'sales', 'support', or 'knowledge'
+        - conversation_data defaults to empty dict if not provided
         """
         visitor_id = validated_data.pop('visitor_id')
         visitor = Visitor.objects.get(id=visitor_id)
         validated_data['visitor'] = visitor
-        
-        # Validate conversation_type if provided
-        conversation_type = validated_data.get('conversation_type', 'routing')
-        if conversation_type not in ['sales', 'support', 'knowledge', 'routing']:
-            validated_data['conversation_type'] = 'routing'
-        
-        # Ensure conversation_type has a default value
-        if 'conversation_type' not in validated_data:
-            validated_data['conversation_type'] = 'routing'
         
         # Ensure conversation_data has a default value
         if 'conversation_data' not in validated_data:

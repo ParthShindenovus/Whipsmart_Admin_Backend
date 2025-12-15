@@ -638,7 +638,7 @@ DO NOT attempt to answer the question using general knowledge. DO NOT try to be 
         response = client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": synthesis_prompt}],
-            max_tokens=1024,
+            max_tokens=512,  # Reduced from 1024 to encourage concise responses
             temperature=0.7
         )
 
