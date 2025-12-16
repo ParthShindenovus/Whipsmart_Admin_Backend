@@ -101,6 +101,8 @@ class Session(models.Model):
     
     def is_expired(self):
         """Check if session has expired."""
+        if self.expires_at is None:
+            return False  # Session never expires if expires_at is None
         return timezone.now() > self.expires_at
 
 

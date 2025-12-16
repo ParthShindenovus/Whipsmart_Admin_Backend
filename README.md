@@ -98,13 +98,58 @@ python manage.py migrate
 python manage.py createsuperuser
 ```
 
-### 8. Run Development Server
+### 8. Install Redis (Required for WebSocket support)
 
+**Windows:**
+- Download Redis from: https://github.com/microsoftarchive/redis/releases
+- Or use WSL: `wsl redis-server`
+- Or use Docker: `docker run -d -p 6379:6379 redis:alpine`
+
+**Linux/Mac:**
 ```bash
-python manage.py runserver
+# Install Redis
+sudo apt-get install redis-server  # Ubuntu/Debian
+brew install redis                  # Mac
+
+# Start Redis
+redis-server
 ```
 
+### 9. Verify WebSocket Setup
+
+Before starting the server, verify the setup:
+
+```bash
+python test_websocket_setup.py
+```
+
+### 10. Run Development Server
+
+**Important:** Django's `runserver` uses WSGI and doesn't support WebSockets. Use uvicorn instead:
+
+**Windows:**
+```bash
+.\run_server.bat
+```
+
+**Linux/Mac:**
+```bash
+chmod +x run_server.sh
+./run_server.sh
+```
+
+**Or manually:**
+```bash
+python -m uvicorn whipsmart_admin.asgi:application --host 0.0.0.0 --port 8000 --reload
+```
+
+**Important Notes:**
+- Redis must be running for WebSocket support (or it will fallback to InMemoryChannelLayer)
+- Use uvicorn (ASGI server) instead of `runserver` for WebSocket support
+- The `--reload` flag enables auto-reload on code changes
+
 The API will be available at `http://127.0.0.1:8000/`
+WebSocket endpoint: `ws://127.0.0.1:8000/ws/chat/`
 
 ## API Endpoints
 

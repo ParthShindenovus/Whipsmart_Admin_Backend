@@ -865,3 +865,59 @@ class ChatMessageViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
                 },
                 message="No suggestions available"
             )
+    
+    @extend_schema(
+        summary="Get Alex AI greeting (Test endpoint)",
+        description="Get the current Alex AI greeting message based on Melbourne timezone. This is a test endpoint to preview the greeting without creating a session. The greeting changes based on time of day and day of week.",
+        responses={
+            200: {
+                'type': 'object',
+                'properties': {
+                    'greeting': {'type': 'string', 'description': 'Full greeting message with markdown formatting'},
+                    'time_info': {
+                        'type': 'object',
+                        'properties': {
+                            'melbourne_time': {'type': 'string', 'description': 'Current time in Melbourne timezone'},
+                            'hour': {'type': 'integer', 'description': 'Current hour (0-23) in Melbourne'},
+                            'day': {'type': 'string', 'description': 'Current day of week'}
+                        }
+                    }
+                }
+            }
+        },
+        tags=['Messages'],
+    )
+    @action(detail=False, methods=['get'], url_path='greeting',
+            authentication_classes=[],
+            permission_classes=[AllowAny])
+    def greeting(self, request):
+        """
+        Test endpoint to get the current Alex AI greeting.
+        Returns the greeting message that would be sent when creating a new session.
+        Useful for testing greeting logic in Swagger.
+        """
+        from agents.alex_greetings import get_full_alex_greeting
+        from django.utils import timezone
+        try:
+            from zoneinfo import ZoneInfo
+        except ImportError:
+            from backports.zoneinfo import ZoneInfo  # type: ignore
+        
+        # Get Melbourne time for info
+        now_utc = timezone.now()
+        melbourne_tz = ZoneInfo('Australia/Melbourne')
+        melbourne_time = now_utc.astimezone(melbourne_tz)
+        
+        greeting_message = get_full_alex_greeting()
+        
+        return success_response(
+            {
+                'greeting': greeting_message,
+                'time_info': {
+                    'melbourne_time': melbourne_time.strftime('%Y-%m-%d %H:%M:%S %Z'),
+                    'hour': melbourne_time.hour,
+                    'day': melbourne_time.strftime('%A')
+                }
+            },
+            message="Greeting generated successfully"
+        )

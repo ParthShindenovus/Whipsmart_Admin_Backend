@@ -48,6 +48,7 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt',
     'corsheaders',
     'drf_spectacular',
+    'channels',
     
     # Local apps
     'core',
@@ -446,3 +447,57 @@ CACHES = {
 #         'LOCATION': config('REDIS_URL', default='redis://127.0.0.1:6379/1'),
 #     }
 # }
+
+# Channels Configuration
+ASGI_APPLICATION = 'whipsmart_admin.asgi.application'
+
+# Channel Layers Configuration
+# Try Redis first, fallback to InMemoryChannelLayer if Redis is not available or incompatible
+try:
+    import redis
+    redis_client = redis.Redis(host='127.0.0.1', port=6379, db=0, socket_connect_timeout=1)
+    redis_client.ping()
+    
+    # Check Redis version - BZPOPMIN requires Redis 5.0+
+    try:
+        redis_info = redis_client.info('server')
+        redis_version = redis_info.get('redis_version', '0.0.0')
+        version_parts = redis_version.split('.')
+        major_version = int(version_parts[0]) if version_parts else 0
+        
+        if major_version < 5:
+            raise Exception(f"Redis version {redis_version} is too old. Redis 5.0+ required for BZPOPMIN command.")
+        
+        # Redis is available and compatible - use RedisChannelLayer
+        CHANNEL_LAYERS = {
+            'default': {
+                'BACKEND': 'channels_redis.core.RedisChannelLayer',
+                'CONFIG': {
+                    "hosts": [config('REDIS_URL', default='redis://127.0.0.1:6379/0')],
+                },
+            },
+        }
+    except Exception as e:
+        # Redis version check failed or version too old
+        import warnings
+        warnings.warn(
+            f"Redis version incompatible or check failed: {e}. "
+            "Using InMemoryChannelLayer. For production, use Redis 5.0+."
+        )
+        CHANNEL_LAYERS = {
+            'default': {
+                'BACKEND': 'channels.layers.InMemoryChannelLayer',
+            },
+        }
+except Exception as e:
+    # Redis not available - use InMemoryChannelLayer for development
+    import warnings
+    warnings.warn(
+        f"Redis is not available: {e}. Using InMemoryChannelLayer. "
+        "WebSocket support may be limited. Install Redis 5.0+ for production use."
+    )
+    CHANNEL_LAYERS = {
+        'default': {
+            'BACKEND': 'channels.layers.InMemoryChannelLayer',
+        },
+    }

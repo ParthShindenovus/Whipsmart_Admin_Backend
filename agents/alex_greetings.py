@@ -4,12 +4,12 @@ Generates time and day-based greetings with Australian accent.
 Uses Melbourne timezone (Australia/Melbourne) for accurate time-based greetings.
 """
 import random
-from django.utils import timezone
+from django.utils import timezone  # type: ignore
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
     # Fallback for Python < 3.9 (though Django 5.1+ requires Python 3.10+)
-    from backports.zoneinfo import ZoneInfo
+    from backports.zoneinfo import ZoneInfo  # type: ignore
 
 
 def _get_melbourne_time():
