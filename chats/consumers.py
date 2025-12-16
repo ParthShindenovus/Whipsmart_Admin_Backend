@@ -7,6 +7,7 @@ import asyncio
 import random
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
+from channels.layers import get_channel_layer
 from django.utils import timezone
 from .models import Session, Visitor, ChatMessage
 from agents.unified_agent import UnifiedAgent
@@ -135,10 +136,25 @@ class ChatConsumer(AsyncWebsocketConsumer):
             _active_connections[connection_key].append(self)
             logger.info(f"[WEBSOCKET] Connection registered for session: {self.session_id} (total connections: {len(_active_connections[connection_key])})")
             
+            # Add this consumer to a channel group for this session
+            # This allows sending messages from management commands via channel layer
+            try:
+                channel_layer = get_channel_layer()
+                if channel_layer and hasattr(self, 'channel_layer') and hasattr(self, 'channel_name'):
+                    group_name = f"session_{self.session_id}"
+                    await self.channel_layer.group_add(group_name, self.channel_name)
+                    logger.info(f"[WEBSOCKET] Added connection to channel group: {group_name} (channel_name: {self.channel_name})")
+                else:
+                    logger.warning(f"[WEBSOCKET] Channel layer not available or consumer not properly initialized")
+            except Exception as e:
+                logger.warning(f"[WEBSOCKET] Error adding to channel group: {str(e)}")
+            
             # Initialize or reuse shared idle timeout state for this session
             if connection_key not in _session_idle_state:
+                current_time = asyncio.get_event_loop().time()
                 _session_idle_state[connection_key] = {
-                    'last_activity_time': asyncio.get_event_loop().time(),
+                    'last_activity_time': current_time,
+                    'timer_start_time': current_time,  # Track when timer started
                     'idle_task': None,
                     'idle_warning_sent': False,
                     'session_complete': False
@@ -147,9 +163,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 _session_idle_state[connection_key]['idle_task'] = asyncio.create_task(
                     self.monitor_idle_timeout_shared(connection_key)
                 )
-                logger.info(f"[WEBSOCKET] Started shared idle monitoring for session: {self.session_id}")
+                logger.info(f"[WEBSOCKET] [IDLE_TIMER] Started NEW idle monitoring for session: {self.session_id} at time: {current_time}")
             else:
-                logger.info(f"[WEBSOCKET] Reusing existing idle timeout state for session: {self.session_id}")
+                logger.info(f"[WEBSOCKET] [IDLE_TIMER] Reusing existing idle timeout state for session: {self.session_id}")
             
             # Send connection confirmation with standardized schema
             try:
@@ -188,6 +204,17 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # Remove from active connections
         if self.session_id and self.visitor_id:
             connection_key = (self.session_id, self.visitor_id)
+            
+            # Remove from channel group
+            try:
+                channel_layer = get_channel_layer()
+                if channel_layer and hasattr(self, 'channel_layer') and hasattr(self, 'channel_name'):
+                    group_name = f"session_{self.session_id}"
+                    await self.channel_layer.group_discard(group_name, self.channel_name)
+                    logger.info(f"[WEBSOCKET] Removed connection from channel group: {group_name}")
+            except Exception as e:
+                logger.warning(f"[WEBSOCKET] Error removing from channel group: {str(e)}")
+            
             if connection_key in _active_connections:
                 try:
                     _active_connections[connection_key].remove(self)
@@ -208,6 +235,48 @@ class ChatConsumer(AsyncWebsocketConsumer):
         
         logger.info(f"[WEBSOCKET] Client disconnected with code: {close_code}")
     
+    async def idle_warning(self, event):
+        """Handle idle warning messages sent via channel layer."""
+        message = event.get('message')
+        response_id = event.get('response_id')
+        metadata = event.get('metadata', {})
+        
+        try:
+            warning_data = self.format_message(
+                'idle_warning',
+                message=message,
+                response_id=response_id,
+                metadata=metadata
+            )
+            await self.send(text_data=json.dumps(warning_data))
+            logger.info(f"[WEBSOCKET] Received and sent idle warning via channel layer for session: {self.session_id}")
+        except Exception as e:
+            logger.error(f"[WEBSOCKET] Error handling idle warning message: {str(e)}", exc_info=True)
+    
+    async def session_end(self, event):
+        """Handle session end messages sent via channel layer."""
+        message = event.get('message')
+        response_id = event.get('response_id')
+        complete = event.get('complete', False)
+        conversation_data = event.get('conversation_data', {})
+        metadata = event.get('metadata', {})
+        
+        try:
+            end_data = self.format_message(
+                'session_end',
+                message=message,
+                response_id=response_id,
+                complete=complete,
+                conversation_data=conversation_data,
+                metadata=metadata
+            )
+            await self.send(text_data=json.dumps(end_data))
+            logger.info(f"[WEBSOCKET] Received and sent session end via channel layer for session: {self.session_id}")
+            # Close connection after sending session end
+            await self.close()
+        except Exception as e:
+            logger.error(f"[WEBSOCKET] Error handling session end message: {str(e)}", exc_info=True)
+    
     async def receive(self, text_data):
         """
         Handle incoming WebSocket messages.
@@ -225,18 +294,24 @@ class ChatConsumer(AsyncWebsocketConsumer):
             if connection_key in _session_idle_state:
                 # Cancel existing idle task
                 idle_state = _session_idle_state[connection_key]
-                if idle_state['idle_task']:
+                if idle_state['idle_task'] and not idle_state['idle_task'].done():
                     idle_state['idle_task'].cancel()
+                    try:
+                        await idle_state['idle_task']
+                    except asyncio.CancelledError:
+                        pass
                 
                 # Reset activity time and warning flag
-                idle_state['last_activity_time'] = asyncio.get_event_loop().time()
+                current_time = asyncio.get_event_loop().time()
+                idle_state['last_activity_time'] = current_time
+                idle_state['timer_start_time'] = current_time  # Reset timer start time
                 idle_state['idle_warning_sent'] = False
                 
                 # Restart idle monitoring task
                 idle_state['idle_task'] = asyncio.create_task(
                     self.monitor_idle_timeout_shared(connection_key)
                 )
-                logger.info(f"[WEBSOCKET] Restarted idle monitoring for session: {self.session_id}")
+                logger.info(f"[WEBSOCKET] [IDLE_TIMER] Restarted idle monitoring for session: {self.session_id} at time: {current_time}")
         
         try:
             data = json.loads(text_data)
@@ -311,18 +386,24 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 if connection_key in _session_idle_state:
                     # Cancel existing idle task
                     idle_state = _session_idle_state[connection_key]
-                    if idle_state['idle_task']:
+                    if idle_state['idle_task'] and not idle_state['idle_task'].done():
                         idle_state['idle_task'].cancel()
+                        try:
+                            await idle_state['idle_task']
+                        except asyncio.CancelledError:
+                            pass
                     
                     # Reset activity time and warning flag
-                    idle_state['last_activity_time'] = asyncio.get_event_loop().time()
+                    current_time = asyncio.get_event_loop().time()
+                    idle_state['last_activity_time'] = current_time
+                    idle_state['timer_start_time'] = current_time  # Reset timer start time
                     idle_state['idle_warning_sent'] = False
                     
                     # Restart idle monitoring task
                     idle_state['idle_task'] = asyncio.create_task(
                         self.monitor_idle_timeout_shared(connection_key)
                     )
-                    logger.info(f"[WEBSOCKET] Restarted idle monitoring for session: {self.session_id} after message")
+                    logger.info(f"[WEBSOCKET] [IDLE_TIMER] Restarted idle monitoring for session: {self.session_id} after message at time: {current_time}")
             
         except Exception as e:
             logger.error(f"[WEBSOCKET] Error handling chat message: {str(e)}", exc_info=True)
@@ -474,16 +555,33 @@ class ChatConsumer(AsyncWebsocketConsumer):
             is_complete = result.get('complete', False)
             self.session_complete = is_complete
             
-            # Mark session as complete in shared idle state
+            # Only stop idle monitoring if session is actually inactive, not just because complete=true
+            # The user requirement: "Prevent idle warnings if complete: true is sent" was clarified to mean
+            # only prevent if the chat is not active (is_active=False)
             if self.session_id and self.visitor_id:
                 connection_key = (self.session_id, self.visitor_id)
                 if connection_key in _session_idle_state:
-                    _session_idle_state[connection_key]['session_complete'] = True
-                    # Cancel idle task
-                    if _session_idle_state[connection_key]['idle_task']:
-                        _session_idle_state[connection_key]['idle_task'].cancel()
-                        _session_idle_state[connection_key]['idle_task'] = None
-                    logger.info(f"[WEBSOCKET] Session marked as complete - idle monitoring stopped")
+                    # Check if session is actually inactive
+                    def check_session_active():
+                        try:
+                            session = Session.objects.get(id=self.session_id)
+                            return session.is_active
+                        except Session.DoesNotExist:
+                            return False
+                    
+                    session_is_active = await database_sync_to_async(check_session_active)()
+                    
+                    # Only stop idle monitoring if session is inactive
+                    if not session_is_active:
+                        _session_idle_state[connection_key]['session_complete'] = True
+                        # Cancel idle task
+                        if _session_idle_state[connection_key]['idle_task']:
+                            _session_idle_state[connection_key]['idle_task'].cancel()
+                            _session_idle_state[connection_key]['idle_task'] = None
+                        logger.info(f"[WEBSOCKET] Session marked as inactive - idle monitoring stopped")
+                    else:
+                        # Session is still active, keep monitoring even if complete=true
+                        logger.info(f"[WEBSOCKET] Session still active - idle monitoring continues (complete={is_complete})")
             
             # Send final response with standardized schema
             complete_message = self.format_message(
@@ -649,56 +747,52 @@ class ChatConsumer(AsyncWebsocketConsumer):
     async def monitor_idle_timeout_shared(self, connection_key):
         """Monitor idle timeout shared across all connections for a session."""
         session_id, visitor_id = connection_key
+        
+        # Store the timer start time at the beginning
+        idle_state = _session_idle_state.get(connection_key)
+        if not idle_state:
+            logger.warning(f"[WEBSOCKET] [IDLE_TIMER] No idle state found for {session_id} - cannot start monitoring")
+            return
+        
+        timer_start_time = idle_state.get('timer_start_time', idle_state['last_activity_time'])
+        logger.info(f"[WEBSOCKET] [IDLE_TIMER] Starting idle monitoring task for session: {session_id}, timer_start={timer_start_time}, last_activity={idle_state['last_activity_time']}")
+        
         try:
-            # Get shared idle state
+            # Wait for first timeout (2 minutes)
+            logger.info(f"[WEBSOCKET] [IDLE_TIMER] Waiting {self.IDLE_WARNING_TIMEOUT} seconds for session: {session_id}")
+            await asyncio.sleep(self.IDLE_WARNING_TIMEOUT)
+            
+            # Re-check idle state (it might have changed during wait)
             idle_state = _session_idle_state.get(connection_key)
             if not idle_state:
-                logger.warning(f"[WEBSOCKET] No idle state found for {session_id}")
+                logger.info(f"[WEBSOCKET] [IDLE_TIMER] Idle state removed for {session_id} during wait - stopping")
                 return
             
             # Don't monitor if session is already complete
             if idle_state.get('session_complete'):
-                logger.info(f"[WEBSOCKET] Session {session_id} is complete - skipping idle monitoring")
+                logger.info(f"[WEBSOCKET] [IDLE_TIMER] Session {session_id} is complete - stopping monitoring")
                 return
             
             # Check if session is active
-            if not await self.is_session_active_by_id(session_id):
-                logger.info(f"[WEBSOCKET] Session {session_id} is not active - skipping idle monitoring")
+            session_is_active = await self.is_session_active_by_id(session_id)
+            if not session_is_active:
+                logger.info(f"[WEBSOCKET] [IDLE_TIMER] Session {session_id} is not active - stopping monitoring")
                 return
             
-            # Store the activity time when timer starts
-            timer_start_time = idle_state['last_activity_time']
-            logger.info(f"[WEBSOCKET] Starting idle monitoring for session {session_id}, timer_start_time: {timer_start_time}")
+            # Get current activity time
+            current_activity_time = idle_state['last_activity_time']
+            # Use the timer_start_time from when this task started (stored above)
             
-            # Wait for first timeout (2 minutes)
-            await asyncio.sleep(self.IDLE_WARNING_TIMEOUT)
-            
-            # Re-check idle state (it might have changed)
-            idle_state = _session_idle_state.get(connection_key)
-            if not idle_state:
-                logger.info(f"[WEBSOCKET] Idle state removed for {session_id} during wait")
-                return
-            
-            # Check if session became complete during wait
-            if idle_state.get('session_complete'):
-                logger.info(f"[WEBSOCKET] Session {session_id} completed during idle wait - stopping monitoring")
-                return
-            
-            # Check if session is still active
-            if not await self.is_session_active_by_id(session_id):
-                logger.info(f"[WEBSOCKET] Session {session_id} became inactive during idle wait - stopping monitoring")
-                return
+            logger.info(f"[WEBSOCKET] [IDLE_TIMER] After 2min wait for {session_id}: timer_start={timer_start_time}, current_activity={current_activity_time}, session_active={session_is_active}")
             
             # Check if still idle (no activity since timer started)
-            current_activity_time = idle_state['last_activity_time']
-            logger.info(f"[WEBSOCKET] Checking idle status for {session_id}: timer_start={timer_start_time}, current={current_activity_time}")
-            
             if timer_start_time and current_activity_time == timer_start_time:
                 # Still idle - send warning to all connections
-                if not idle_state['idle_warning_sent']:
-                    logger.info(f"[WEBSOCKET] Session {session_id} is idle - sending warning")
+                if not idle_state.get('idle_warning_sent', False):
+                    logger.info(f"[WEBSOCKET] [IDLE_TIMER] Session {session_id} is idle after 2 minutes - sending warning")
                     await self.send_idle_warning_shared(connection_key)
                     idle_state['idle_warning_sent'] = True
+                    idle_state['timer_start_time'] = timer_start_time  # Keep original timer start
                     
                     # Wait for second timeout (another 2 minutes)
                     await asyncio.sleep(self.IDLE_WARNING_TIMEOUT)
@@ -706,36 +800,38 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     # Re-check idle state again
                     idle_state = _session_idle_state.get(connection_key)
                     if not idle_state:
-                        logger.info(f"[WEBSOCKET] Idle state removed for {session_id} during warning wait")
+                        logger.info(f"[WEBSOCKET] [IDLE_TIMER] Idle state removed for {session_id} during warning wait")
                         return
                     
                     # Check if session became complete during wait
                     if idle_state.get('session_complete'):
-                        logger.info(f"[WEBSOCKET] Session {session_id} completed during idle warning wait - stopping monitoring")
+                        logger.info(f"[WEBSOCKET] [IDLE_TIMER] Session {session_id} completed during idle warning wait - stopping")
                         return
                     
                     # Check if session is still active
                     if not await self.is_session_active_by_id(session_id):
-                        logger.info(f"[WEBSOCKET] Session {session_id} became inactive during idle warning wait - stopping monitoring")
+                        logger.info(f"[WEBSOCKET] [IDLE_TIMER] Session {session_id} became inactive during idle warning wait - stopping")
                         return
                     
                     # Check if still idle after warning
                     current_activity_time = idle_state['last_activity_time']
                     if current_activity_time == timer_start_time:
                         # Still no activity - end the session
-                        logger.info(f"[WEBSOCKET] Session {session_id} still idle after warning - ending session")
+                        logger.info(f"[WEBSOCKET] [IDLE_TIMER] Session {session_id} still idle after 4 minutes total - ending session")
                         await self.end_session_idle_shared(connection_key)
                     else:
-                        logger.info(f"[WEBSOCKET] Session {session_id} had activity after warning - timer was reset")
+                        logger.info(f"[WEBSOCKET] [IDLE_TIMER] Session {session_id} had activity after warning - timer was reset")
+                else:
+                    logger.info(f"[WEBSOCKET] [IDLE_TIMER] Warning already sent for {session_id}, skipping")
             else:
-                logger.info(f"[WEBSOCKET] Session {session_id} had activity during idle wait - timer was reset")
+                logger.info(f"[WEBSOCKET] [IDLE_TIMER] Session {session_id} had activity during idle wait - timer was reset (start={timer_start_time}, current={current_activity_time})")
                         
         except asyncio.CancelledError:
             # Task was cancelled (user sent a message, connection closed, or session completed)
-            logger.info(f"[WEBSOCKET] Idle monitoring cancelled for {session_id}")
+            logger.info(f"[WEBSOCKET] [IDLE_TIMER] Idle monitoring cancelled for {session_id}")
             pass
         except Exception as e:
-            logger.error(f"[WEBSOCKET] Error in shared idle monitoring for {session_id}: {str(e)}", exc_info=True)
+            logger.error(f"[WEBSOCKET] [IDLE_TIMER] Error in shared idle monitoring for {session_id}: {str(e)}", exc_info=True)
     
     async def send_idle_warning_shared(self, connection_key):
         """Send idle warning message to all connections for a session."""
@@ -781,6 +877,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
             
             # Send warning message to all active connections for this session
             connections = _active_connections.get(connection_key, [])
+            sent_count = 0
+            logger.info(f"[WEBSOCKET] [IDLE_TIMER] Sending idle warning to {len(connections)} connections for session: {session_id}")
+            
             for consumer in connections[:]:  # Copy list to avoid modification during iteration
                 try:
                     warning_data = consumer.format_message(
@@ -790,15 +889,17 @@ class ChatConsumer(AsyncWebsocketConsumer):
                         metadata={'type': 'idle_warning', 'timeout_seconds': self.IDLE_WARNING_TIMEOUT}
                     )
                     await consumer.send(text_data=json.dumps(warning_data))
+                    sent_count += 1
+                    logger.info(f"[WEBSOCKET] [IDLE_TIMER] Successfully sent idle warning to connection for session: {session_id}")
                 except Exception as e:
-                    logger.warning(f"[WEBSOCKET] Error sending idle warning to connection: {str(e)}")
+                    logger.warning(f"[WEBSOCKET] [IDLE_TIMER] Error sending idle warning to connection: {str(e)}")
                     # Remove dead connection
                     try:
                         connections.remove(consumer)
                     except ValueError:
                         pass
             
-            logger.info(f"[WEBSOCKET] Sent idle warning for session: {session_id} to {len(connections)} connections")
+            logger.info(f"[WEBSOCKET] [IDLE_TIMER] Sent idle warning for session: {session_id} to {sent_count}/{len(connections)} connections")
             
         except Exception as e:
             logger.error(f"[WEBSOCKET] Error sending idle warning: {str(e)}", exc_info=True)
