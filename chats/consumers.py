@@ -414,21 +414,29 @@ class ChatConsumer(AsyncWebsocketConsumer):
             
             assistant_message_text = result.get('message', '')
             
-            # Stream the response word by word
-            words = assistant_message_text.split()
+            # Stream the response preserving ALL formatting (newlines \n, markdown **, spaces, etc.)
+            # Stream character-by-character in small chunks to preserve exact formatting
             full_response = ""
+            chunk_buffer = ""
+            chunk_size = 10  # Send chunks of 10 characters for balance between smoothness and efficiency
             
-            for word in words:
-                full_response += word + " "
-                chunk_message = self.format_message(
-                    'chunk',
-                    message_id=str(user_message_obj.id) if user_message_obj else None,
-                    chunk=word + " ",
-                    done=False
-                )
-                await self.send(text_data=json.dumps(chunk_message))
-                # Small delay for streaming effect
-                await asyncio.sleep(0.05)
+            for i, char in enumerate(assistant_message_text):
+                full_response += char
+                chunk_buffer += char
+                
+                # Send chunk when buffer reaches chunk_size or at end of message
+                if len(chunk_buffer) >= chunk_size or i == len(assistant_message_text) - 1:
+                    if chunk_buffer:  # Only send if buffer has content
+                        chunk_message = self.format_message(
+                            'chunk',
+                            message_id=str(user_message_obj.id) if user_message_obj else None,
+                            chunk=chunk_buffer,
+                            done=False
+                        )
+                        await self.send(text_data=json.dumps(chunk_message))
+                        chunk_buffer = ""
+                        # Small delay for streaming effect
+                        await asyncio.sleep(0.02)  # Small delay for character-by-character streaming
             
             # Send final chunk with done flag
             final_chunk_message = self.format_message(
