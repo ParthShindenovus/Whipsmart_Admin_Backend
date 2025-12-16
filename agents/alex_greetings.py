@@ -1,38 +1,52 @@
 """
 Alex AI - Smart Greeting Rules
 Generates time and day-based greetings with Australian accent.
+Uses Melbourne timezone (Australia/Melbourne) for accurate time-based greetings.
 """
 import random
-from datetime import datetime
 from django.utils import timezone
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    # Fallback for Python < 3.9 (though Django 5.1+ requires Python 3.10+)
+    from backports.zoneinfo import ZoneInfo
+
+
+def _get_melbourne_time():
+    """
+    Get current time in Melbourne timezone (Australia/Melbourne).
+    Handles both AEST (Australian Eastern Standard Time) and AEDT (Australian Eastern Daylight Time).
+    """
+    now_utc = timezone.now()
+    melbourne_tz = ZoneInfo('Australia/Melbourne')
+    melbourne_time = now_utc.astimezone(melbourne_tz)
+    return melbourne_time
 
 
 def get_alex_greeting() -> str:
     """
-    Generate an Alex AI greeting based on current time and day.
+    Generate an Alex AI greeting based on current time and day in Melbourne timezone.
     Returns a greeting message with Australian accent, properly structured.
+    Time greeting comes first, then day greeting.
     """
-    now = timezone.now()
-    current_hour = now.hour
-    current_day = now.strftime('%A')
+    melbourne_time = _get_melbourne_time()
+    current_hour = melbourne_time.hour
+    current_day = melbourne_time.strftime('%A')
     
-    # Get time-based greeting
+    # Get time-based greeting first
     time_greeting = _get_time_greeting(current_hour)
     
-    # Get day-based greeting
-    day_greeting = _get_day_greeting(current_day)
+    # Get day-based greeting (time-aware)
+    day_greeting = _get_day_greeting(current_day, current_hour)
     
-    # Build structured greeting - prioritize day greeting, then time greeting
+    # Build structured greeting - time greeting first, then day greeting
     greeting_parts = []
+    
+    if time_greeting:
+        greeting_parts.append(time_greeting)
     
     if day_greeting:
         greeting_parts.append(day_greeting)
-    
-    if time_greeting:
-        # Only add time greeting if it doesn't conflict with day greeting
-        # For example, if day greeting already has "G'day", don't add another "G'day"
-        if not (day_greeting and "G'day" in day_greeting and "G'day" in time_greeting):
-            greeting_parts.append(time_greeting)
     
     if greeting_parts:
         # Join with proper spacing
@@ -44,15 +58,23 @@ def get_alex_greeting() -> str:
 
 def _get_time_greeting(hour: int) -> str:
     """
-    Get time-based greeting based on hour.
+    Get time-based greeting based on hour in Melbourne timezone.
     Returns greeting string or None.
-    Simple greetings without questions.
+    Professional Australian greetings.
     """
-    # Morning (before 12 PM)
-    if hour < 12:
+    # Early Morning (before 9 AM)
+    if hour < 9:
         greetings = [
-            "Hope your day's off to a great start! ☀️",
-            "Good morning!"
+            "Good morning!",
+            "G'day! Good morning!"
+        ]
+        return random.choice(greetings)
+    
+    # Morning (9 AM – 11:59 AM)
+    elif hour < 12:
+        greetings = [
+            "Good morning!",
+            "G'day! Good morning!"
         ]
         return random.choice(greetings)
     
@@ -60,67 +82,123 @@ def _get_time_greeting(hour: int) -> str:
     elif hour < 17:
         greetings = [
             "Good afternoon!",
-            "Hope you're having a good arvo!"
+            "G'day! Good afternoon!"
         ]
         return random.choice(greetings)
     
-    # Late Afternoon / 5 PM (Beer O'Clock 🍺)
-    elif hour == 17:
+    # Late Afternoon / Early Evening (5 PM – 7:59 PM)
+    elif hour < 20:
         greetings = [
-            "It's 5 o'clock — beer o'clock! 🍻",
-            "Looks like beer o'clock! 🍺"
+            "Good evening!",
+            "G'day! Good evening!"
         ]
         return random.choice(greetings)
     
-    # Evening (after 5 PM)
+    # Evening (after 8 PM)
     else:
         greetings = [
             "Good evening!",
-            "Hope you've had a solid day."
+            "G'day! Good evening!"
         ]
         return random.choice(greetings)
 
 
-def _get_day_greeting(day: str) -> str:
+def _get_day_greeting(day: str, hour: int) -> str:
     """
-    Get day-based greeting.
-    Returns greeting string or None.
+    Get day-based greeting that's time-aware.
+    Returns greeting string.
+    Professional Australian support agent greetings.
+    
+    - Morning (before 12 PM): Uses "Happy [Day]!" or similar
+    - After morning (12 PM onwards): Uses "Hope your [Day] is going well" or similar
     """
-    day_greetings = {
-        'Monday': [
-            "G'day! Happy Monday!",
-            "G'day! Happy Monday!"
-        ],
-        'Tuesday': [
-            "G'day! Happy Tuesday!",
-            "G'day! Happy Tuesday!"
-        ],
-        'Wednesday': [
-            "G'day! Happy Hump Day! 🐪",
-            "G'day! Happy Hump Day! 🐪"
-        ],
-        'Thursday': [
-            "G'day! Happy Thursday!",
-            "G'day! Happy Thursday!"
-        ],
-        'Friday': [
-            "G'day! Happy Friday — TGIF! 🎉",
-            "G'day! Happy Friday — TGIF! 🎉"
-        ],
-        'Saturday': [
-            "G'day! Happy Saturday!",
-            "G'day! Happy Saturday!"
-        ],
-        'Sunday': [
-            "G'day! Happy Sunday!",
-            "G'day! Happy Sunday!"
-        ]
-    }
+    # Morning greetings (before 12 PM)
+    if hour < 12:
+        day_greetings = {
+            'Monday': [
+                "Happy Monday!",
+                "Hope you're having a great start to your week!",
+                "Hope your week is off to a fantastic start!"
+            ],
+            'Tuesday': [
+                "Happy Tuesday!",
+                "Hope you're having a terrific Tuesday!",
+                "Hope your Tuesday is shaping up nicely!"
+            ],
+            'Wednesday': [
+                "Happy Hump Day!",
+                "Hope you're having a wonderful Wednesday!",
+                "Hope your week is going well!"
+            ],
+            'Thursday': [
+                "Happy Thursday!",
+                "Hope you're having a fantastic Thursday!",
+                "Hope your Thursday is treating you well!"
+            ],
+            'Friday': [
+                "Happy Friday!",
+                "Hope you're having a ripper Friday!",
+                "Hope your Friday is off to a great start!"
+            ],
+            'Saturday': [
+                "Happy Saturday!",
+                "Hope you're having a wonderful Saturday!",
+                "Hope your weekend is off to a great start!"
+            ],
+            'Sunday': [
+                "Happy Sunday!",
+                "Hope you're having a lovely Sunday!",
+                "Hope your weekend is going well!"
+            ]
+        }
+    else:
+        # After morning (12 PM onwards) - more contextual greetings
+        day_greetings = {
+            'Monday': [
+                "Hope your Monday is going well so far!",
+                "Hope you're having a productive Monday!",
+                "Hope your week is off to a great start!"
+            ],
+            'Tuesday': [
+                "Hope your Tuesday is going well so far!",
+                "Hope you're having a terrific Tuesday!",
+                "Hope your Tuesday is treating you well!"
+            ],
+            'Wednesday': [
+                "Hope your Wednesday is going well so far!",
+                "Hope you're having a wonderful Wednesday!",
+                "Hope your week is going well!"
+            ],
+            'Thursday': [
+                "Hope your Thursday is going well so far!",
+                "Hope you're having a fantastic Thursday!",
+                "Hope your Thursday is treating you well!"
+            ],
+            'Friday': [
+                "Hope your Friday is going well so far!",
+                "Hope you're having a ripper Friday!",
+                "Hope you're wrapping up a great week!"
+            ],
+            'Saturday': [
+                "Hope your Saturday is going well so far!",
+                "Hope you're having a wonderful Saturday!",
+                "Hope your weekend is going well!"
+            ],
+            'Sunday': [
+                "Hope your Sunday is going well so far!",
+                "Hope you're having a lovely Sunday!",
+                "Hope your weekend is treating you well!"
+            ]
+        }
     
     greetings = day_greetings.get(day)
     if greetings:
         return random.choice(greetings)
-    return None
+    # Fallback - should never happen, but just in case
+    if hour < 12:
+        return "Hope you're having a great day!"
+    else:
+        return "Hope your day is going well so far!"
 
 
 def _get_casual_greeting() -> str:
@@ -140,31 +218,37 @@ def get_full_alex_greeting() -> str:
     Get a full Alex AI greeting with introduction.
     Combines time/day greeting with introduction message.
     Properly formatted for UI display with markdown formatting (bold, line breaks).
-    Simple greeting without casual questions.
+    Uses Melbourne timezone for accurate time-based greetings.
+    Professional Australian support agent greeting.
     """
-    now = timezone.now()
-    current_hour = now.hour
-    current_day = now.strftime('%A')
+    melbourne_time = _get_melbourne_time()
+    current_hour = melbourne_time.hour
+    current_day = melbourne_time.strftime('%A')
     
-    # Get day-based greeting (simple, no questions)
-    day_greeting = _get_day_greeting(current_day)
-    
-    # Get time-based greeting (simple, no questions)
+    # Get time-based greeting first (e.g., "Good afternoon!")
     time_greeting = _get_time_greeting(current_hour)
+    
+    # Get day-based greeting (time-aware, e.g., "Hope your Tuesday is going well so far!")
+    day_greeting = _get_day_greeting(current_day, current_hour)
     
     # Build structured message with proper formatting and line breaks
     message_lines = []
     
-    # Start with bold day greeting
+    # Start with time greeting first (bold)
+    if time_greeting:
+        message_lines.append(f"**{time_greeting}**")
+    else:
+        # Fallback if no time greeting
+        if current_hour < 12:
+            message_lines.append("**Good morning!**")
+        elif current_hour < 17:
+            message_lines.append("**Good afternoon!**")
+        else:
+            message_lines.append("**Good evening!**")
+    
+    # Add day greeting second (bold)
     if day_greeting:
         message_lines.append(f"**{day_greeting}**")
-    else:
-        # Fallback if no day greeting
-        message_lines.append("**G'day!**")
-    
-    # Add time greeting if available (simple, no questions)
-    if time_greeting:
-        message_lines.append(time_greeting)
     
     # Add multiple blank lines for better visual separation
     message_lines.append("")
