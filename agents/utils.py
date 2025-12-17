@@ -49,20 +49,20 @@ def is_greeting(message: str) -> bool:
 
 def get_greeting_response(message: str) -> str:
     """
-    Generate an appropriate response for greetings and common statements with Australian accent.
+    Generate an appropriate response for greetings and common statements with professional Australian accent.
     
     Args:
         message: User's message text
         
     Returns:
-        Appropriate response string with Australian accent
+        Appropriate response string with professional Australian accent
     """
     message_lower = message.lower().strip()
     message_clean = re.sub(r'[^\w\s]', '', message_lower)
     
-    # Greeting responses with Australian accent
+    # Greeting responses with professional Australian accent
     if re.match(r'^(hi|hello|hey|greetings|good morning|good afternoon|good evening|good day|hi there|hello there)', message_clean):
-        return """G'day! 👋 I'm Alex AI, your friendly assistant here at WhipSmart. I'm here to help you with everything related to electric vehicle leasing and novated leases.
+        return """Hello! 👋 I'm Alex AI, your friendly assistant here at WhipSmart. I'm here to help you with everything related to electric vehicle leasing and novated leases.
 
 I can help you with:
 • Understanding novated leases and how they work
@@ -75,21 +75,21 @@ I can help you with:
 
 What would you like to know about EV leasing or novated leases?"""
     
-    # Thank you responses with Australian accent
+    # Thank you responses with professional Australian accent
     elif re.match(r'^(thanks|thank you|thx|ty|appreciate it)', message_clean):
-        return """No worries! 😊 Happy to help, mate. If you've got any other questions about WhipSmart's EV leasing services or novated leases, feel free to ask!"""
+        return """No worries! 😊 Happy to help. If you've got any other questions about WhipSmart's EV leasing services or novated leases, feel free to ask!"""
     
-    # Goodbye responses with Australian accent
+    # Goodbye responses with professional Australian accent
     elif re.match(r'^(bye|goodbye|see you|farewell|have a good day|take care)', message_clean):
-        return """Cheers! 👋 Feel free to come back anytime if you've got questions about WhipSmart's electric vehicle leasing services or novated leases. Have a ripper day!"""
+        return """Cheers! 👋 Feel free to come back anytime if you've got questions about WhipSmart's electric vehicle leasing services or novated leases. Have a great day!"""
     
-    # Acknowledgment responses with Australian accent
+    # Acknowledgment responses with professional Australian accent
     elif re.match(r'^(ok|okay|alright|sure|got it|understood)', message_clean):
         return """Too easy! Is there anything else you'd like to know about WhipSmart's EV leasing services or novated leases?"""
     
-    # Default greeting response with Australian accent
+    # Default greeting response with professional Australian accent
     else:
-        return """G'day! 👋 I'm Alex AI, your friendly assistant here at WhipSmart. I'm here to help you with everything related to electric vehicle leasing and novated leases.
+        return """Hello! 👋 I'm Alex AI, your friendly assistant here at WhipSmart. I'm here to help you with everything related to electric vehicle leasing and novated leases.
 
 I can help you with:
 • Understanding novated leases and how they work
