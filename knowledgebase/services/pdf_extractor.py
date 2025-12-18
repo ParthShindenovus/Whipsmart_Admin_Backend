@@ -16,6 +16,13 @@ def _get_docs_base_dir() -> Path:
     return Path(base_dir) / "docs"
 
 
+def _get_env_folder() -> str:
+    """
+    Return environment folder name based on DEBUG.
+    """
+    return "development" if getattr(settings, "DEBUG", False) else "production"
+
+
 def get_pdf_path(filename: str) -> Path:
     """
     Resolve a PDF filename within the docs directory.
@@ -1297,7 +1304,7 @@ def save_extracted_text_for_pdf(filename: str, use_llm: bool = True, qa_format: 
         rendered = structure_text_with_llm(rendered, filename, qa_format=qa_format, structure=structure)
 
     docs_dir = _get_docs_base_dir()
-    output_dir = docs_dir / "extracted-docs"
+    output_dir = docs_dir / "extracted-docs" / _get_env_folder()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     output_path = output_dir / (pdf_path.stem + ".txt")
@@ -1346,7 +1353,7 @@ def process_uploaded_pdf(uploaded_file, use_llm: bool = True, qa_format: bool = 
         
         # Create output directory
         docs_dir = _get_docs_base_dir()
-        output_dir = docs_dir / "extracted-docs"
+        output_dir = docs_dir / "extracted-docs" / _get_env_folder()
         output_dir.mkdir(parents=True, exist_ok=True)
         
         base_filename = Path(file_name).stem

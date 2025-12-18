@@ -153,9 +153,10 @@ class DocumentViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
             title = file_stem
             serializer.validated_data['title'] = title
         
-        # Generate file path in media folder
+        # Generate file path in media folder, separated by environment (development vs production)
+        env_folder = 'development' if settings.DEBUG else 'production'
         now = datetime.now()
-        file_path = f'documents/{now.year}/{now.month:02d}/{now.day:02d}/{file_name}'
+        file_path = f'{env_folder}/documents/{now.year}/{now.month:02d}/{now.day:02d}/{file_name}'
         
         # Save file to media folder (default_storage is imported at module level)
         file_name_saved = default_storage.save(file_path, uploaded_file)
@@ -708,21 +709,23 @@ class DocumentViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
         # Delete associated chunks
         DocumentChunk.objects.filter(document=instance).delete()
         
-        # Delete file from storage
-        if instance.file_url:
+        # Helper to delete any local file referenced by URL (original or extracted)
+        def _delete_local_file(url: str):
+            if not url:
+                return
             try:
-                from urllib.parse import urlparse
-                parsed_url = urlparse(instance.file_url)
-                if parsed_url.netloc in ('localhost', '127.0.0.1', '') or 'localhost' in parsed_url.netloc:
-                    # Local file
-                    url_path = parsed_url.path
-                    if url_path.startswith(settings.MEDIA_URL):
-                        url_path = url_path[len(settings.MEDIA_URL):]
-                    file_path = Path(settings.MEDIA_ROOT) / url_path.lstrip('/')
-                    if file_path.exists():
-                        file_path.unlink()
+                file_path = self._get_file_path_from_url(url)
+                if file_path.exists():
+                    file_path.unlink()
+                    logger.info(f"Deleted file at {file_path}")
             except Exception as e:
-                logger.warning(f"Error deleting file {instance.file_url}: {str(e)}")
+                logger.warning(f"Error deleting file {url}: {str(e)}")
+        
+        # Delete original uploaded file
+        _delete_local_file(instance.file_url)
+        # Delete structured/extracted files if present
+        _delete_local_file(getattr(instance, 'structured_text_qa_url', None))
+        _delete_local_file(getattr(instance, 'structured_text_raw_url', None))
         
         # Update state to deleted before actual deletion
         instance.state = 'deleted'
