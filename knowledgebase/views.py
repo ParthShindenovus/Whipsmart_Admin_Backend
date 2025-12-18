@@ -30,7 +30,7 @@ from core.utils import success_response, error_response
     ),
     create=extend_schema(
         summary="Upload new document",
-        description="Upload a new document (PDF, TXT, DOCX, HTML) using form-data. The file will be saved to the media folder and the URL will be stored in the database. Title and file_type are automatically extracted from the uploaded file (title from filename, file_type from extension). Requires authentication.",
+        description="Upload a new document (PDF, TXT, DOCX, HTML) using form-data. The file will be saved to the media folder and the URL will be stored in the database. Title and file_type are automatically extracted from the uploaded file (title from filename, file_type from extension). For PDFs, the document is extracted and structured using LLM in Q&A format asynchronously in the background - the document is saved immediately and structured_text_qa_url will be populated when processing completes. Only the structured Q&A text file is created (no raw extracted file). This structured file is used for chunking. Maximum file size: 100MB. Requires authentication.",
         request={
             'multipart/form-data': {
                 'type': 'object',
@@ -38,11 +38,19 @@ from core.utils import success_response, error_response
                     'file': {
                         'type': 'string',
                         'format': 'binary',
-                        'description': 'Document file to upload (PDF, TXT, DOCX, HTML). Title and file_type are auto-detected from the file.'
+                        'description': 'Document file to upload (PDF, TXT, DOCX, HTML). Title and file_type are auto-detected from the file. Max size: 100MB.'
                     },
                     'title': {
                         'type': 'string',
                         'description': 'Document title (optional, defaults to filename without extension)'
+                    },
+                    'filename': {
+                        'type': 'string',
+                        'description': 'Optional: Custom filename for PDF metadata (used in Q&A chunks). Only applies to PDFs.'
+                    },
+                    'reference_url': {
+                        'type': 'string',
+                        'description': 'Optional: Reference URL for PDF metadata (used in Q&A chunks). Only applies to PDFs.'
                     }
                 },
                 'required': ['file']
@@ -109,9 +117,17 @@ class DocumentViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
         if not uploaded_file:
             raise ValidationError({'file': 'File is required'})
         
+        # Check file size
+        max_size = getattr(settings, 'MAX_UPLOAD_SIZE', 100 * 1024 * 1024)  # Default 100MB
+        if uploaded_file.size > max_size:
+            raise ValidationError({
+                'file': f'File size exceeds maximum allowed size of {max_size / (1024 * 1024):.1f}MB'
+            })
+        
         # Extract file name and extension
         from pathlib import Path
         from datetime import datetime
+        import threading
         file_path_obj = Path(uploaded_file.name)
         file_name = uploaded_file.name
         file_stem = file_path_obj.stem  # Filename without extension
@@ -141,7 +157,7 @@ class DocumentViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
         now = datetime.now()
         file_path = f'documents/{now.year}/{now.month:02d}/{now.day:02d}/{file_name}'
         
-        # Save file to media folder
+        # Save file to media folder (default_storage is imported at module level)
         file_name_saved = default_storage.save(file_path, uploaded_file)
         
         # Build file URL
@@ -152,14 +168,132 @@ class DocumentViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
             # In production, use MEDIA_URL setting
             file_url = f"{settings.MEDIA_URL}{file_name_saved}"
         
-        # Save document with file_url, title, file_type, and state
-        serializer.save(
+        # Save document immediately (without structured text URL for PDFs)
+        # PDF processing will happen asynchronously
+        document = serializer.save(
             uploaded_by=self.request.user,
             file_url=file_url,
             title=title,
             file_type=file_type,
-            state='uploaded'
+            state='uploaded',
+            structured_text_raw_url=None,  # Not used - we only create Q&A structured file
+            structured_text_qa_url=None,  # Will be populated after async processing
+            processing_status='pending' if file_type == 'pdf' else 'completed'  # Track PDF processing status
         )
+        
+        # For PDFs, extract data and structure with LLM (Q&A format) asynchronously
+        if file_type == 'pdf':
+            # Get optional parameters from request
+            user_filename = serializer.validated_data.pop('filename', None) or self.request.data.get('filename', '').strip() or None
+            reference_url = serializer.validated_data.pop('reference_url', None) or self.request.data.get('reference_url', '').strip() or None
+            
+            # Get host for URL building
+            host = self.request.get_host() if hasattr(self.request, 'get_host') else 'localhost:8000'
+            protocol = 'https' if self.request.is_secure() else 'http'
+            
+            # Process PDF in background thread to avoid blocking the response
+            def process_pdf_async():
+                try:
+                    from knowledgebase.services.pdf_extractor import process_uploaded_pdf
+                    
+                    # Update status to extracting
+                    document.processing_status = 'extracting'
+                    document.processing_error = None
+                    document.save(update_fields=['processing_status', 'processing_error'])
+                    
+                    # Re-open the file from storage
+                    file_path_full = Path(settings.MEDIA_ROOT) / file_name_saved
+                    if not file_path_full.exists():
+                        logger.error(f"File not found for PDF processing: {file_path_full}")
+                        document.processing_status = 'failed'
+                        document.processing_error = f"File not found: {file_path_full}"
+                        document.save(update_fields=['processing_status', 'processing_error'])
+                        return
+                    
+                    # Create a file wrapper that implements Django UploadedFile interface
+                    class FileWrapper:
+                        def __init__(self, file_path, name):
+                            self.file_path = Path(file_path) if not isinstance(file_path, Path) else file_path
+                            self.name = name
+                            self.size = self.file_path.stat().st_size if self.file_path.exists() else 0
+                        
+                        def read(self, size=-1):
+                            with open(self.file_path, 'rb') as f:
+                                return f.read(size)
+                        
+                        def chunks(self, chunk_size=8192):
+                            """Read file in chunks, mimicking Django UploadedFile.chunks()"""
+                            with open(self.file_path, 'rb') as f:
+                                while True:
+                                    chunk = f.read(chunk_size)
+                                    if not chunk:
+                                        break
+                                    yield chunk
+                        
+                        def seek(self, pos):
+                            # Not needed for chunks() method, but included for compatibility
+                            pass
+                        
+                        def tell(self):
+                            # Not needed for chunks() method, but included for compatibility
+                            return 0
+                    
+                    wrapped_file = FileWrapper(file_path_full, file_name)
+                    
+                    # Update status to structuring
+                    document.processing_status = 'structuring'
+                    document.save(update_fields=['processing_status'])
+                    
+                    logger.info(f"Extracting and structuring PDF with LLM (Q&A format): {file_name}")
+                    # Process PDF: extract data, structure with LLM, Q&A format, NO raw file
+                    output_paths = process_uploaded_pdf(
+                        uploaded_file=wrapped_file,
+                        use_llm=True,  # Use LLM for structuring
+                        qa_format=True,  # Q&A format for RAG
+                        user_filename=user_filename,
+                        reference_url=reference_url,
+                        save_raw=False  # Don't create raw file - only structured Q&A file
+                    )
+                    
+                    # Build URL for structured Q&A text file (only file we create)
+                    base_dir = Path(settings.BASE_DIR)
+                    processed_path = output_paths.get('processed_path')
+                    
+                    structured_text_qa_url = None
+                    
+                    if processed_path and processed_path.exists():
+                        # Convert absolute path to relative path from BASE_DIR
+                        rel_processed_path = processed_path.relative_to(base_dir)
+                        if settings.DEBUG:
+                            structured_text_qa_url = f"{protocol}://{host}/{rel_processed_path.as_posix()}"
+                        else:
+                            structured_text_qa_url = f"/{rel_processed_path.as_posix()}"
+                        
+                        # Update document with structured Q&A text URL and mark as completed
+                        document.structured_text_qa_url = structured_text_qa_url
+                        document.processing_status = 'completed'
+                        document.processing_error = None
+                        document.save(update_fields=['structured_text_qa_url', 'processing_status', 'processing_error'])
+                        
+                        logger.info(f"Successfully created structured Q&A text file for document {document.id}: {structured_text_qa_url}")
+                    else:
+                        logger.warning(f"Structured Q&A file was not created for document {document.id}")
+                        document.processing_status = 'failed'
+                        document.processing_error = "Structured Q&A file was not created"
+                        document.save(update_fields=['processing_status', 'processing_error'])
+                except Exception as e:
+                    error_msg = str(e)
+                    logger.error(f"Error creating structured Q&A text file for PDF {file_name}: {e}", exc_info=True)
+                    # Update document with error status
+                    document.processing_status = 'failed'
+                    document.processing_error = error_msg
+                    document.save(update_fields=['processing_status', 'processing_error'])
+            
+            # Start background processing
+            thread = threading.Thread(target=process_pdf_async)
+            thread.daemon = True
+            thread.start()
+            logger.info(f"Started background PDF extraction and structuring for document {document.id}")
     
     @extend_schema(
         summary="Chunk document",
@@ -179,7 +313,7 @@ class DocumentViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
     )
     @action(detail=True, methods=['post'], url_path='chunk')
     def chunk(self, request, pk=None):
-        """Chunk a document and store chunks in database."""
+        """Chunk a document and store chunks in database. For PDFs with structured text, parses Q&A pairs."""
         # Validate document ID
         validation_error = self.validate_document_id(pk)
         if validation_error:
@@ -198,31 +332,99 @@ class DocumentViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
         try:
             logger.info(f"Starting chunking for document {document.id} (file_url: {document.file_url}, file_type: {document.file_type})")
             
-            processed_chunks = process_document(
-                file_url=document.file_url,
-                file_type=document.file_type,
-                document_id=str(document.id),
-                title=document.title,
-                save_to_db=True
-            )
-            
-            if processed_chunks:
-                logger.info(f"Successfully created {len(processed_chunks)} chunks for document {document.id}")
+            # For PDFs, use structured Q&A text file (created during upload with LLM)
+            if document.file_type == 'pdf':
+                if not document.structured_text_qa_url:
+                    return error_response(
+                        'Structured Q&A text file is not ready yet. Please wait for PDF processing to complete and try again.',
+                        status_code=status.HTTP_400_BAD_REQUEST
+                    )
+                
+                logger.info(f"Using structured Q&A text file for document {document.id}")
+                
+                # Read structured Q&A text file
+                qa_file_path = self._get_file_path_from_url(document.structured_text_qa_url)
+                if not qa_file_path.exists():
+                    logger.warning(f"Structured Q&A file not found: {qa_file_path}")
+                    return error_response(
+                        'Structured Q&A text file not found. The file may still be processing or there was an error during PDF extraction.',
+                        status_code=status.HTTP_400_BAD_REQUEST
+                    )
+                
+                with open(qa_file_path, 'r', encoding='utf-8') as f:
+                    structured_text = f.read()
+                
+                # Parse Q&A pairs
+                from knowledgebase.services.pdf_extractor import parse_qa_structure
+                
+                logger.info(f"Parsing Q&A structure from file. File length: {len(structured_text)} characters")
+                logger.debug(f"First 500 chars of structured text: {structured_text[:500]}")
+                
+                qa_pairs = parse_qa_structure(structured_text, document.title)
+                
+                logger.info(f"Parsed {len(qa_pairs)} Q&A pairs from structured text")
+                
+                if not qa_pairs:
+                    logger.error(f"No Q&A pairs parsed from structured text for document {document.id}")
+                    logger.error(f"Structured text preview (first 1000 chars): {structured_text[:1000]}")
+                    return error_response(
+                        f'No Q&A pairs found in structured text file. File length: {len(structured_text)} chars. Please ensure the document was properly processed. Check server logs for details.',
+                        status_code=status.HTTP_400_BAD_REQUEST
+                    )
+                
+                # Delete existing chunks for this document
+                DocumentChunk.objects.filter(document=document).delete()
+                
+                # Create DocumentChunk records from Q&A pairs
+                chunks_created = []
+                for idx, qa_pair in enumerate(qa_pairs):
+                    chunk_id = f"{document.id}-chunk-{idx}"
+                    chunk_text = qa_pair.get('answer', '')
+                    question = qa_pair.get('question', '')
+                    
+                    # Build metadata
+                    metadata = {
+                        'document_id': str(document.id),
+                        'title': qa_pair.get('title', document.title),
+                        'file_type': document.file_type,
+                        'page': qa_pair.get('page', 'N/A'),
+                        'filename': qa_pair.get('filename', document.title),
+                        'section': qa_pair.get('section', ''),
+                        'description': qa_pair.get('description', ''),
+                        'reference_url': qa_pair.get('reference_url', 'N/A'),
+                    }
+                    
+                    chunk = DocumentChunk.objects.create(
+                        document=document,
+                        chunk_id=chunk_id,
+                        chunk_index=idx,
+                        text=chunk_text,
+                        text_length=len(chunk_text),
+                        question=question,
+                        metadata=metadata
+                    )
+                    chunks_created.append(chunk)
+                
+                # Update document state and chunk count
+                document.state = 'chunked'
+                document.chunk_count = len(chunks_created)
+                document.save(update_fields=['state', 'chunk_count'])
+                
+                logger.info(f"Successfully created {len(chunks_created)} Q&A chunks for document {document.id}")
                 return success_response(
                     {
-                        'chunks_created': len(processed_chunks),
+                        'chunks_created': len(chunks_created),
                         'document_id': str(document.id),
                         'document_title': document.title,
-                        'state': document.state
+                        'state': document.state,
+                        'chunk_type': 'qa_pairs'
                     },
-                    message=f'Document chunked successfully. {len(processed_chunks)} chunks created.'
+                    message=f'Document chunked successfully. {len(chunks_created)} Q&A chunks created.'
                 )
             else:
-                logger.warning(f"No chunks created for document {document.id} - no text extracted")
-                return error_response(
-                    'No text extracted from document. The file may be empty, corrupted, or in an unsupported format.',
-                    status_code=status.HTTP_400_BAD_REQUEST
-                )
+                # Regular document processing (non-PDF or PDF without structured text)
+                return self._chunk_regular_document(document)
+                
         except FileNotFoundError as e:
             logger.error(f"File not found error for document {document.id}: {str(e)}")
             return error_response(
@@ -241,6 +443,116 @@ class DocumentViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
                 f'Error chunking document: {str(e)}. Please check the file format and try again.',
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+    
+    def _chunk_regular_document(self, document):
+        """Helper method to chunk regular documents (non-PDF or PDF without structured text)."""
+        processed_chunks = process_document(
+            file_url=document.file_url,
+            file_type=document.file_type,
+            document_id=str(document.id),
+            title=document.title,
+            save_to_db=True
+        )
+        
+        if processed_chunks:
+            logger.info(f"Successfully created {len(processed_chunks)} chunks for document {document.id}")
+            document.refresh_from_db()
+            return success_response(
+                {
+                    'chunks_created': len(processed_chunks),
+                    'document_id': str(document.id),
+                    'document_title': document.title,
+                    'state': document.state,
+                    'chunk_type': 'regular'
+                },
+                message=f'Document chunked successfully. {len(processed_chunks)} chunks created.'
+            )
+        else:
+            logger.warning(f"No chunks created for document {document.id} - no text extracted")
+            return error_response(
+                'No text extracted from document. The file may be empty, corrupted, or in an unsupported format.',
+                status_code=status.HTTP_400_BAD_REQUEST
+            )
+    
+    def _get_file_path_from_url(self, url: str) -> Path:
+        """Helper method to convert URL to file path. Handles both media URLs and structured text URLs."""
+        from django.conf import settings
+        from urllib.parse import urlparse, unquote
+        
+        # Remove protocol and domain if present
+        if url.startswith('http://') or url.startswith('https://'):
+            parsed = urlparse(url)
+            url_path = parsed.path
+        else:
+            url_path = url
+        
+        # Decode URL-encoded characters (e.g., %20 -> space)
+        url_path = unquote(url_path)
+        
+        # Remove leading slash
+        url_path = url_path.lstrip('/')
+        
+        # Check if it's a media URL (starts with media/ or /media/)
+        if url_path.startswith('media/') or url_path.startswith('media/'):
+            # Use media root
+            file_path = Path(settings.MEDIA_ROOT) / url_path.replace('media/', '', 1).lstrip('/')
+        else:
+            # Assume it's a relative path from BASE_DIR (for structured text files)
+            base_dir = Path(settings.BASE_DIR)
+            file_path = base_dir / url_path
+        
+        return file_path
+    
+    @extend_schema(
+        summary="Get document processing status",
+        description="Get the current processing status of a document. Useful for checking PDF extraction/structuring progress.",
+        request=None,
+        responses={
+            200: {
+                'type': 'object',
+                'properties': {
+                    'success': {'type': 'boolean'},
+                    'data': {
+                        'type': 'object',
+                        'properties': {
+                            'document_id': {'type': 'string'},
+                            'processing_status': {'type': 'string'},
+                            'processing_error': {'type': 'string'},
+                            'structured_text_qa_url': {'type': 'string'},
+                            'is_ready_for_chunking': {'type': 'boolean'}
+                        }
+                    }
+                }
+            }
+        },
+        tags=['Documents'],
+    )
+    @action(detail=True, methods=['get'], url_path='processing-status')
+    def processing_status(self, request, pk=None):
+        """Get document processing status."""
+        # Validate document ID
+        validation_error = self.validate_document_id(pk)
+        if validation_error:
+            return validation_error
+        
+        document = self.get_object()
+        
+        # Check if document is ready for chunking (PDFs need structured_text_qa_url)
+        is_ready_for_chunking = True
+        if document.file_type == 'pdf':
+            is_ready_for_chunking = document.processing_status == 'completed' and document.structured_text_qa_url is not None
+        
+        return success_response(
+            {
+                'document_id': str(document.id),
+                'processing_status': document.processing_status,
+                'processing_error': document.processing_error,
+                'structured_text_qa_url': document.structured_text_qa_url,
+                'is_ready_for_chunking': is_ready_for_chunking,
+                'file_type': document.file_type
+            },
+            message='Document processing status retrieved successfully'
+        )
     
     @extend_schema(
         summary="Vectorize document",
@@ -722,3 +1034,133 @@ class KnowledgebaseStatsView(views.APIView):
             stats['by_type'][file_type] = queryset.filter(file_type=file_type).count()
         
         return Response(stats)
+
+
+@extend_schema(
+    summary="Extract structured text from uploaded PDF",
+    description=(
+        "Upload a PDF file and extract structured content including page numbers, "
+        "headings, paragraphs, and tables. The endpoint uses LLM to convert the content "
+        "into Q&A format (default) suitable for RAG pipeline, with labeled question-answer "
+        "pairs covering all information in the PDF. Alternatively, can output structured "
+        "document format. The endpoint generates a structured `.txt` file with the same base "
+        "name and saves it to `docs/extracted-docs/`. The response returns the relative path "
+        "of the generated file."
+    ),
+    request={
+        'multipart/form-data': {
+            'type': 'object',
+            'properties': {
+                'file': {
+                    'type': 'string',
+                    'format': 'binary',
+                    'description': 'PDF file to upload and extract structured text from'
+                },
+                'use_llm': {
+                    'type': 'boolean',
+                    'description': 'Whether to use LLM for structuring (default: true). Set to false to use basic formatting only.'
+                },
+                'qa_format': {
+                    'type': 'boolean',
+                    'description': 'Whether to convert to Q&A format for RAG pipeline (default: true). Set to false for structured document format.'
+                },
+                'filename': {
+                    'type': 'string',
+                    'description': 'User-provided filename for metadata (optional). If not provided, uses uploaded file name.'
+                },
+                'reference_url': {
+                    'type': 'string',
+                    'description': 'User-provided reference URL for metadata (optional). If not provided, uses "N/A".'
+                }
+            },
+            'required': ['file']
+        }
+    },
+    responses={
+        200: {
+            "type": "object",
+            "properties": {
+                "success": {"type": "boolean"},
+                "filename": {"type": "string"},
+                "output_path": {"type": "string", "description": "Main output path (processed if LLM used, otherwise raw)"},
+                "raw_path": {"type": "string", "description": "Path to raw extracted text file with proper formatting (includes tables)"},
+                "processed_path": {"type": "string", "description": "Path to LLM-processed Q&A format file (if LLM enabled)"},
+                "message": {"type": "string"},
+            },
+        },
+        400: {"description": "Invalid input or file format"},
+        500: {"description": "Processing error"},
+    },
+    tags=["Documents"],
+)
+class PDFExtractView(views.APIView):
+    """
+    API endpoint to extract structured content from an uploaded PDF file
+    and write a `.txt` file into `docs/extracted-docs/` with the same base name.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        # Check if file was uploaded
+        if 'file' not in request.FILES:
+            return error_response(
+                "No file provided. Please upload a PDF file using the 'file' field.",
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        
+        uploaded_file = request.FILES['file']
+        
+        # Validate file is PDF
+        if not uploaded_file.name.lower().endswith('.pdf'):
+            return error_response(
+                "Invalid file type. Only PDF files are supported.",
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        
+        # Validate file size (optional: limit to 50MB)
+        max_size = 50 * 1024 * 1024  # 50MB
+        if uploaded_file.size > max_size:
+            return error_response(
+                f"File too large. Maximum size is {max_size / (1024*1024):.0f}MB.",
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        
+        # Check if LLM structuring should be used (default: True)
+        use_llm = request.data.get('use_llm', 'true').lower() in ('true', '1', 'yes')
+        # Check if Q&A format should be used (default: True for RAG pipeline)
+        qa_format = request.data.get('qa_format', 'true').lower() in ('true', '1', 'yes')
+        # Get user-provided filename and reference_url
+        user_filename = request.data.get('filename', '').strip() or None
+        reference_url = request.data.get('reference_url', '').strip() or None
+        
+        try:
+            from knowledgebase.services.pdf_extractor import process_uploaded_pdf
+            result_paths = process_uploaded_pdf(uploaded_file, use_llm=use_llm, qa_format=qa_format, user_filename=user_filename, reference_url=reference_url, save_raw=True)
+        except ValueError as e:
+            return error_response(str(e), status_code=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.error(f"Error extracting PDF '{uploaded_file.name}': {e}", exc_info=True)
+            return error_response(
+                f"Unexpected error while processing PDF: {e}",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        # Return paths relative to project root for convenience
+        base_dir = Path(getattr(settings, "BASE_DIR", "."))
+        
+        response_data = {
+            "filename": uploaded_file.name,
+            "output_path": str(Path(result_paths["output_path"]).relative_to(base_dir)),
+        }
+        
+        # Include raw and processed paths if available
+        if "raw_path" in result_paths:
+            response_data["raw_path"] = str(Path(result_paths["raw_path"]).relative_to(base_dir))
+        if "processed_path" in result_paths:
+            response_data["processed_path"] = str(Path(result_paths["processed_path"]).relative_to(base_dir))
+
+        return success_response(
+            response_data,
+            message="PDF extracted successfully. Raw extracted file and processed Q&A file generated.",
+        )

@@ -26,6 +26,7 @@ env/
 ENV/
 .venv
 .cursor
+docs-personal/
 
 # Django
 *.log

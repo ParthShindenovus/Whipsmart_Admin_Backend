@@ -519,6 +519,8 @@ class ChatMessageViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
                 'complete': result.get('complete', False),
                 'needs_info': result.get('needs_info'),
                 'suggestions': result.get('suggestions', []),
+                # Expose knowledge base results (includes "source" URLs) for frontend UI
+                'knowledge_results': result.get('knowledge_results', []),
                 'message_id': str(user_message.id) if user_message else None,
                 'response_id': str(assistant_message.id) if assistant_message else None
             }

@@ -61,10 +61,17 @@ def vectorize_document(document, use_db_chunks: bool = True) -> Dict[str, Any]:
             if chunks.exists():
                 processed_chunks = []
                 for chunk in chunks:
+                    # Include question in metadata if available (for Q&A chunks)
+                    chunk_metadata = chunk.metadata.copy() if chunk.metadata else {}
+                    if chunk.question:
+                        chunk_metadata['question'] = chunk.question
+                    # Add text to metadata for Pinecone storage
+                    chunk_metadata['text'] = chunk.text
+                    
                     processed_chunks.append((
                         chunk.text,
                         chunk.chunk_id,
-                        chunk.metadata
+                        chunk_metadata
                     ))
             else:
                 # No chunks in DB, process document first
@@ -127,10 +134,14 @@ def vectorize_document(document, use_db_chunks: bool = True) -> Dict[str, Any]:
             
             # Prepare vectors for Pinecone with document_id in metadata
             for (chunk_text, chunk_id, metadata), embedding in zip(processed_chunks, embeddings):
+                # Ensure text is in metadata (for DB chunks, it might not be there)
+                if 'text' not in metadata or metadata.get('text') != chunk_text:
+                    metadata['text'] = chunk_text
+                
                 vector_data = {
                     "id": chunk_id,
                     "values": embedding,
-                    "metadata": metadata  # Contains document_id for easy deletion
+                    "metadata": metadata  # Contains document_id, text, and other metadata
                 }
                 vectors_to_upsert.append(vector_data)
         
@@ -268,7 +279,7 @@ def delete_document_vectors(document) -> bool:
         return False
 
 
-def search_documents(query: str, top_k: int = 5, document_id: str = None) -> Dict[str, Any]:
+def search_documents(query: str, top_k: int = 3, document_id: str = None) -> Dict[str, Any]:
     """
     Search documents using RAG (Retrieval Augmented Generation).
     Matches reference implementation from rag_tool.py

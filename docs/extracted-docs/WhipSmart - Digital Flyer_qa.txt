@@ -1,0 +1,89 @@
+===Q&A-001===
+Q: What is WhipSmart?  
+A: WhipSmart is a revolutionary platform designed to streamline vehicle ownership. It offers a seamless, integrated approach to finance, leasing, and vehicle management, empowering individuals and teams to make smarter, cost-effective decisions.  
+METADATA:  
+- page: 1  
+- filename: WhipSmart - Digital Flyer.pdf  
+- title: The Smarter Way to Buy, Own & Upgrade Your Vehicle  
+- section: Introduction to WhipSmart  
+- description: Overview of WhipSmart as a platform for vehicle management, finance, and leasing.  
+- reference_url: N/A  
+---
+
+===Q&A-002===
+Q: How does WhipSmart help employees with vehicle ownership?  
+A: WhipSmart provides employees with a way to buy their dream car and pay for its running costs (fuel, insurance, tyres, servicing, registration, etc.) through a single monthly fee via salary sacrifice. Employees can pay with pre-tax earnings and purchase their vehicle GST-free.  
+METADATA:  
+- page: 1  
+- filename: WhipSmart - Digital Flyer.pdf  
+- title: The Smarter Way to Buy, Own & Upgrade Your Vehicle  
+- section: Benefits for Employees  
+- description: Explanation of how WhipSmart supports employees in managing vehicle ownership costs.  
+- reference_url: N/A  
+---
+
+===Q&A-003===
+Q: What are the benefits of choosing an electric vehicle (EV) or plug-in hybrid through WhipSmart?  
+A: Employees who choose an electric vehicle (EV) or plug-in hybrid through WhipSmart benefit from exemptions on fringe-benefits tax (FBT). Additionally, this choice supports sustainability efforts.  
+METADATA:  
+- page: 1  
+- filename: WhipSmart - Digital Flyer.pdf  
+- title: The Smarter Way to Buy, Own & Upgrade Your Vehicle  
+- section: Benefits for Employees  
+- description: Details on the advantages of selecting EVs or plug-in hybrids through WhipSmart.  
+- reference_url: N/A  
+---
+
+===Q&A-004===
+Q: Does WhipSmart support the purchase of pre-owned vehicles?  
+A: Yes, WhipSmart supports the purchase and financing of both new and pre-owned vehicles, ensuring options are available for every preference and budget.  
+METADATA:  
+- page: 1  
+- filename: WhipSmart - Digital Flyer.pdf  
+- title: The Smarter Way to Buy, Own & Upgrade Your Vehicle  
+- section: Vehicle Options  
+- description: Information on the types of vehicles supported by WhipSmart.  
+- reference_url: N/A  
+---
+
+===Q&A-005===
+Q: How is WhipSmart planning to revolutionize business fleet management?  
+A: WhipSmart is set to revolutionize how businesses manage their fleet vehicles, assets, and employees' personal cars by providing a dynamic, all-in-one platform.  
+METADATA:  
+- page: 1  
+- filename: WhipSmart - Digital Flyer.pdf  
+- title: The Smarter Way to Buy, Own & Upgrade Your Vehicle  
+- section: Business Fleet Management  
+- description: Future plans of WhipSmart to enhance business fleet and asset management.  
+- reference_url: N/A  
+---
+
+===Q&A-006===
+Q: What are the key benefits of using WhipSmart?  
+A: The key benefits of using WhipSmart include:  
+- Retaining employees  
+- Contributing to Net Zero sustainability goals  
+- Utilizing a smart, integrated platform for vehicle management  
+METADATA:  
+- page: 1  
+- filename: WhipSmart - Digital Flyer.pdf  
+- title: The Smarter Way to Buy, Own & Upgrade Your Vehicle  
+- section: Key Benefits  
+- description: Highlights of the primary advantages offered by WhipSmart.  
+- reference_url: N/A  
+---
+
+===Q&A-007===
+Q: How can someone contact WhipSmart for more information?  
+A: Individuals can contact WhipSmart through the following methods:  
+- Phone: (07) 2100 0123  
+- Email: info@whipsmart.au  
+- Website: whipsmart.au  
+METADATA:  
+- page: 1  
+- filename: WhipSmart - Digital Flyer.pdf  
+- title: The Smarter Way to Buy, Own & Upgrade Your Vehicle  
+- section: Contact Information  
+- description: Contact details for WhipSmart, including phone, email, and website.  
+- reference_url: N/A  
+---

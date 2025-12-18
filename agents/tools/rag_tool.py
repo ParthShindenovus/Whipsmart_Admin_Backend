@@ -10,7 +10,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def rag_tool_node(state, top_k: int = 8) -> AgentState:
+def rag_tool_node(state, top_k: int = 3) -> AgentState:
     """
     RAG tool node: searches WhipSmart documents using Pinecone vector search.
     Expects state.tool_result to contain {"action":"rag","query":"..."}
@@ -72,54 +72,31 @@ def rag_tool_node(state, top_k: int = 8) -> AgentState:
         docs = []
         if results and hasattr(results, 'matches'):
             logger.info(f"[STATS] Found {len(results.matches)} matches from Pinecone")
-            
-            # Import here to avoid circular imports
-            try:
-                from knowledgebase.models import DocumentChunk, Document
-            except ImportError:
-                logger.warning("[WARN] Could not import DocumentChunk model")
-                DocumentChunk = None
-            
+
+            retrieved_chunk_ids = []
+
             for i, match in enumerate(results.matches, 1):
                 metadata = match.metadata or {}
                 document_id = metadata.get("document_id", "")
                 chunk_index = metadata.get("chunk_index", 0)
+                chunk_id = getattr(match, "id", None)
                 
-                # Try to fetch full chunk text from database
-                full_text = metadata.get("text", "")[:2000]  # Fallback to truncated metadata
-                if DocumentChunk and document_id and chunk_index is not None:
-                    try:
-                        import uuid
-                        # Try to convert document_id to UUID if it's a string
-                        try:
-                            doc_uuid = uuid.UUID(document_id) if isinstance(document_id, str) else document_id
-                        except (ValueError, AttributeError):
-                            doc_uuid = document_id
-                        
-                        chunk = DocumentChunk.objects.filter(
-                            document_id=doc_uuid,
-                            chunk_index=chunk_index
-                        ).first()
-                        
-                        if chunk and chunk.text:
-                            full_text = chunk.text
-                            logger.info(f"  [{i}] Retrieved FULL chunk text from DB ({len(full_text)} chars)")
-                        else:
-                            logger.warning(f"  [{i}] Chunk not found in DB (doc_id={document_id}, idx={chunk_index}), using metadata ({len(full_text)} chars)")
-                    except Exception as e:
-                        logger.warning(f"  [{i}] Error fetching chunk from DB: {str(e)[:100]}, using metadata")
+                # Use text directly from Pinecone metadata instead of hitting the database
+                # Limit to 2000 characters to avoid excessively long context
+                full_text = metadata.get("text", "")[:2000]
                 
-                # Only include URL if document type is 'url', not for file-based documents
+                # Only include primary URL if document type is 'url', not for file-based documents
                 file_type = metadata.get("file_type", "")
                 url_value = ""
                 
                 if file_type == "url":
                     # For URL documents, include the URL
                     url_value = metadata.get("url") or ""
-                
-                # For file-based documents (pdf, docx, txt, html), don't include URL
-                # Only URL documents should have URLs in the response
-                
+
+                # Optional reference URL (e.g., PDF Q&A chunks with a source page)
+                reference_url = metadata.get("reference_url") or ""
+                retrieved_chunk_ids.append(chunk_id or f"{document_id}-chunk-{chunk_index}")
+
                 doc = {
                     "text": full_text,  # Use full text from DB or metadata
                     "url": url_value,  # Only URLs for URL document type
@@ -127,16 +104,29 @@ def rag_tool_node(state, top_k: int = 8) -> AgentState:
                     "chunk_index": chunk_index,
                     "document_id": document_id,
                     "document_title": metadata.get("document_title", ""),
-                    "file_type": file_type  # Include file type for reference
+                    "file_type": file_type,  # Include file type for reference
+                    "chunk_id": chunk_id,  # Pinecone vector ID, if available
+                    "reference_url": reference_url,  # Optional source/reference URL for this chunk
                 }
                 docs.append(doc)
                 
                 # Improved logging with more context
                 preview_length = 150
                 text_preview = doc['text'][:preview_length] if doc['text'] else "N/A"
-                logger.info(f"  [{i}] Score: {doc['score']:.4f} | Doc: {doc.get('document_title', 'N/A')[:30]} | Chunk #{chunk_index} | Text: {text_preview}...")
+                logger.info(
+                    f"  [{i}] Score: {doc['score']:.4f} | "
+                    f"Chunk ID: {doc.get('chunk_id') or f'{document_id}-chunk-{chunk_index}'} | "
+                    f"Doc: {doc.get('document_title', 'N/A')[:30]} | "
+                    f"Chunk #{chunk_index} | Text: {text_preview}..."
+                )
         else:
             logger.warning("[WARN]  No matches found in Pinecone")
+
+        # Log summary of retrieved chunk IDs for this query
+        if docs:
+            logger.info(f"[RAG] Query: '{query}' | Retrieved chunk_ids: {retrieved_chunk_ids}")
+        else:
+            logger.info(f"[RAG] Query: '{query}' | Retrieved no chunks")
 
         logger.info(f"[OK] RAG Tool Results: {len(docs)} documents found")
         logger.info("=" * 80)

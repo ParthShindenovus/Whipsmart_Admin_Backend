@@ -1,11 +1,16 @@
 from django.urls import path, include
 from core.router import NoFormatSuffixRouter
-from .views import DocumentViewSet, KnowledgebaseStatsView
+from .views import DocumentViewSet, KnowledgebaseStatsView, PDFExtractView
 
 router = NoFormatSuffixRouter()
-router.register(r'documents', DocumentViewSet, basename='document')
+router.register(r"documents", DocumentViewSet, basename="document")
 
 urlpatterns = [
-    path('', include(router.urls)),
-    path('stats/', KnowledgebaseStatsView.as_view(), name='knowledgebase-stats'),
+    path("", include(router.urls)),
+    path("stats/", KnowledgebaseStatsView.as_view(), name="knowledgebase-stats"),
+    path(
+        "pdf-extract/",
+        PDFExtractView.as_view(),
+        name="knowledgebase-pdf-extract",
+    ),
 ]

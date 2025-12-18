@@ -34,10 +34,30 @@ class Document(models.Model):
         ('failed', 'Failed'),
     ]
     
+    PROCESSING_STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('extracting', 'Extracting'),
+        ('structuring', 'Structuring with LLM'),
+        ('completed', 'Completed'),
+        ('failed', 'Failed'),
+    ]
+    
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     title = models.CharField(max_length=255)
     file_url = models.URLField(help_text="URL to the document file (stored in media folder)")
     file_type = models.CharField(max_length=10, choices=FILE_TYPE_CHOICES)
+    
+    # Structured text files (for PDFs - raw and processed Q&A format)
+    structured_text_raw_url = models.URLField(
+        blank=True, 
+        null=True, 
+        help_text="URL to raw extracted structured text file (for PDFs)"
+    )
+    structured_text_qa_url = models.URLField(
+        blank=True, 
+        null=True, 
+        help_text="URL to processed Q&A format structured text file (for PDFs)"
+    )
     
     # State management
     state = models.CharField(
@@ -51,6 +71,19 @@ class Document(models.Model):
         choices=VECTOR_STATUS_CHOICES,
         default='not_started',
         help_text="Status of vectorization process"
+    )
+    
+    # PDF Processing status (for tracking async PDF extraction/structuring)
+    processing_status = models.CharField(
+        max_length=20,
+        choices=PROCESSING_STATUS_CHOICES,
+        default='pending',
+        help_text="Status of PDF extraction and structuring process"
+    )
+    processing_error = models.TextField(
+        blank=True,
+        null=True,
+        help_text="Error message if PDF processing failed"
     )
     
     # Vectorization tracking
@@ -110,8 +143,13 @@ class DocumentChunk(models.Model):
         help_text="Unique chunk identifier (format: {document_id}-chunk-{index})"
     )
     chunk_index = models.IntegerField(help_text="Index of chunk in the document")
-    text = models.TextField(help_text="Text content of the chunk")
+    text = models.TextField(help_text="Text content of the chunk (answer for Q&A format)")
     text_length = models.IntegerField(help_text="Length of chunk text in characters")
+    question = models.TextField(
+        blank=True,
+        null=True,
+        help_text="Question label for this chunk (for Q&A format chunks)"
+    )
     
     # Vectorization status
     is_vectorized = models.BooleanField(default=False, help_text="Whether chunk has been vectorized")

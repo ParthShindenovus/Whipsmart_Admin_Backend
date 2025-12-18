@@ -22,7 +22,7 @@ class DocumentChunkSerializer(serializers.ModelSerializer):
     class Meta:
         model = DocumentChunk
         fields = ['id', 'chunk_id', 'chunk_index', 'text', 'text_length', 
-                  'is_vectorized', 'vector_id', 'vectorized_at', 'metadata', 
+                  'question', 'is_vectorized', 'vector_id', 'vectorized_at', 'metadata', 
                   'created_at', 'updated_at']
         read_only_fields = ['id', 'created_at', 'updated_at']
 
@@ -37,11 +37,13 @@ class DocumentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Document
         fields = ['id', 'title', 'file', 'file_url', 'file_type', 
-                  'state', 'vector_status', 'vector_id', 'is_vectorized', 
-                  'vectorized_at', 'chunk_count', 'uploaded_by', 'is_active', 
+                  'state', 'vector_status', 'processing_status', 'processing_error',
+                  'vector_id', 'is_vectorized', 'vectorized_at', 'chunk_count', 
+                  'uploaded_by', 'is_active', 'structured_text_qa_url',
                   'chunks', 'created_at', 'updated_at']
         read_only_fields = ['id', 'uploaded_by', 'file_url', 'file_type', 'state', 'vector_status',
-                           'vector_id', 'is_vectorized', 'vectorized_at', 'chunk_count',
+                           'processing_status', 'processing_error', 'vector_id', 'is_vectorized', 
+                           'vectorized_at', 'chunk_count', 'structured_text_qa_url',
                            'created_at', 'updated_at']
     
     def validate_file(self, value):

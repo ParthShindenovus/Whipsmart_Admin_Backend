@@ -180,6 +180,16 @@ class UnifiedAgent:
                     # Fallback: generate a response based on tool results
                     assistant_message = self._generate_response_from_tool_results(function_names, tool_results)
                 
+                # Extract knowledge base results (including URLs) from search_knowledge_base tool, if used
+                knowledge_results = []
+                if "search_knowledge_base" in function_names:
+                    for fn, tr in zip(function_names, tool_results):
+                        if fn == "search_knowledge_base":
+                            tool_res = tr.get("result") or {}
+                            if tool_res.get("success"):
+                                knowledge_results = tool_res.get("results", []) or []
+                            break
+                
                 # Check if lead was submitted
                 if "submit_lead" in function_names:
                     for result in tool_results:
@@ -224,7 +234,13 @@ class UnifiedAgent:
                     'suggestions': suggestions,
                     'complete': False,
                     'needs_info': needs_info,
-                    'escalate_to': None
+                    'escalate_to': None,
+                    # Expose RAG/knowledge-base results (each item includes "source" URL if available)
+                    'knowledge_results': knowledge_results,
+                    # Also include in metadata for WebSocket "complete" messages
+                    'metadata': {
+                        'knowledge_results': knowledge_results,
+                    },
                 }
             else:
                 # LLM responded directly without calling tools
@@ -239,7 +255,11 @@ class UnifiedAgent:
                     'suggestions': suggestions,
                     'complete': False,
                     'needs_info': needs_info,
-                    'escalate_to': None
+                    'escalate_to': None,
+                    'knowledge_results': [],
+                    'metadata': {
+                        'knowledge_results': [],
+                    },
                 }
                 
         except Exception as e:
@@ -376,6 +396,7 @@ UNDERSTANDING USER PROMPTS:
 - If the question is too broad (e.g., "tell me about leasing"), ask what specific aspect they want to know
 - If the question is unclear, ask a clarifying question BEFORE searching knowledge base
 - Use conversation history to understand context and follow-up questions
+- CRITICAL: For ANY question about WhipSmart, novated leases, inclusions, costs, tax, benefits, risks, eligibility, or the leasing process, you MUST call the search_knowledge_base tool FIRST, then answer using the retrieved information.
 
 EXAMPLES:
 - If you asked "Would you like to connect with our team?" and user says "yes" → Use collect_user_info tool or ask_for_missing_field
@@ -568,7 +589,8 @@ Remember: You are Alex AI with a professional Australian accent - be warm, frien
                     if isinstance(r, dict):
                         text = r.get('text', '')[:500]  # Limit length
                         score = r.get('score', 0.0)
-                        source = r.get('metadata', {}).get('source', '')
+                        # Prefer explicit reference_url, then url, for link back to source
+                        source = r.get('reference_url') or r.get('url') or ''
                         formatted_results.append({
                             "text": text,
                             "score": score,

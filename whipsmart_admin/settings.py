@@ -318,7 +318,7 @@ if DEBUG:
 # Pinecone settings
 PINECONE_API_KEY = config('PINECONE_API_KEY', default='')
 PINECONE_ENVIRONMENT = config('PINECONE_ENVIRONMENT', default='')
-PINECONE_INDEX_NAME = config('PINECONE_INDEX_NAME', default='whipsmart-docs')
+PINECONE_INDEX_NAME = config('PINECONE_INDEX_NAME', default='whipsmart')
 
 # OpenAI settings (for embeddings if not using Azure)
 OPENAI_API_KEY = config('OPENAI_API_KEY', default='')
@@ -351,8 +351,10 @@ AZURE_STORAGE_ACCOUNT_KEY = config('AZURE_STORAGE_ACCOUNT_KEY', default='')
 AZURE_STORAGE_CONTAINER_NAME = config('AZURE_STORAGE_CONTAINER_NAME', default='')
 
 # File upload settings
-FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10MB
-DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10MB
+FILE_UPLOAD_MAX_MEMORY_SIZE = 100 * 1024 * 1024  # 100MB - increased for large PDFs
+DATA_UPLOAD_MAX_MEMORY_SIZE = 100 * 1024 * 1024  # 100MB
+# Maximum file size for uploads (in bytes) - 100MB
+MAX_UPLOAD_SIZE = 100 * 1024 * 1024
 
 # Logging configuration
 LOGGING = {

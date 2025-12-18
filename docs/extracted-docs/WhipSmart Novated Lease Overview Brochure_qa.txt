@@ -1,0 +1,131 @@
+===Q&A-001===
+Q: What is a novated lease?  
+A: A novated lease is an agreement involving an employee, their employer, WhipSmart, and a finance company. It allows the lease of a vehicle where the employer makes lease payments on behalf of the employee. Employees and employers are advised to seek professional advice from an accountant before entering into a novated lease.  
+METADATA:  
+- page: 2  
+- filename: WhipSmart Novated Lease Overview Brochure.pdf  
+- title: NOVATED LEASE OVERVIEW  
+- section: For Employee Novated Leases  
+- description: Explanation of what a novated lease is and its participants.  
+- reference_url: https://whipsmart.au/about/  
+---
+
+===Q&A-002===
+Q: Why should businesses choose WhipSmart for novated leasing?  
+A: WhipSmart offers simple novated lease options for businesses of all sizes and encourages the consideration of electric vehicles where suitable. They also support leasing petrol and diesel vehicles.  
+METADATA:  
+- page: 1  
+- filename: WhipSmart Novated Lease Overview Brochure.pdf  
+- title: NOVATED LEASE OVERVIEW  
+- section: Why Choose WhipSmart?  
+- description: Highlights the benefits of choosing WhipSmart for novated leasing.  
+- reference_url: https://whipsmart.au/about/  
+---
+
+===Q&A-003===
+Q: How does GST work on vehicle purchases in a novated lease?  
+A: The vehicle is purchased with the GST discounted, as the finance company pays the GST and claims it back. This reduces the GST of the car by up to $6,334, with unlimited GST reduction available for utes.  
+METADATA:  
+- page: 2  
+- filename: WhipSmart Novated Lease Overview Brochure.pdf  
+- title: NOVATED LEASE OVERVIEW  
+- section: GST on Vehicle Purchase  
+- description: Details on how GST is handled in a novated lease vehicle purchase.  
+- reference_url: https://whipsmart.au/about/  
+---
+
+===Q&A-004===
+Q: What are the ATO-stipulated residual (balloon) values for novated leases?  
+A: The ATO-stipulated residual values for novated leases are:  
+- 1-year lease: Minimum 65.63% of the car's initial value  
+- 2-year lease: Minimum 56.25%  
+- 3-year lease: Minimum 46.88%  
+- 4-year lease: Minimum 37.50%  
+- 5-year lease: Minimum 28.13%  
+A high kilometer deduction may apply if driving more than 25,000 km per year.  
+METADATA:  
+- page: 2  
+- filename: WhipSmart Novated Lease Overview Brochure.pdf  
+- title: NOVATED LEASE OVERVIEW  
+- section: Residual (Balloon) Calculation  
+- description: Explanation of residual values for novated leases based on lease duration.  
+- reference_url: https://whipsmart.au/about/  
+---
+
+===Q&A-005===
+Q: How are pay deductions and invoicing handled in a novated lease?  
+A: WhipSmart invoices the employer monthly and direct debits the agreed lease amount, including GST. The employer applies a deduction to the employee's pay template, deducting the GST-free amount pre-tax and claiming the GST back. WhipSmart provides a deduction schedule to match the monthly invoice to weekly or fortnightly pay cycles. If the vehicle is FBT-exempt (e.g., an electric vehicle), all deductions are pre-tax. If the vehicle incurs FBT, a portion of the deduction is post-tax to account for fringe benefits tax.  
+METADATA:  
+- page: 2  
+- filename: WhipSmart Novated Lease Overview Brochure.pdf  
+- title: NOVATED LEASE OVERVIEW  
+- section: Pay Deduction and Invoicing  
+- description: Details on how pay deductions and invoicing are managed in a novated lease.  
+- reference_url: https://whipsmart.au/about/  
+---
+
+===Q&A-006===
+Q: What is included in a novated lease?  
+A: A novated lease includes the lease finance component for the vehicle purchase and any other inclusions requested by the employer, such as insurance, registration, fuel/electricity, tyres, maintenance, etc. These items are itemized in the monthly invoice and included in the deduction schedule.  
+METADATA:  
+- page: 4  
+- filename: WhipSmart Novated Lease Overview Brochure.pdf  
+- title: NOVATED LEASE OVERVIEW  
+- section: Inclusions  
+- description: List of items typically included in a novated lease.  
+- reference_url: https://whipsmart.au/about/  
+---
+
+===Q&A-007===
+Q: How does FBT reporting work for novated leases?  
+A: Employers must provide an FBT report to the ATO for the fringe benefits tax (FBT) year (1 April to 31 March). The percentage of business use claimed for the vehicle reduces the FBT owed. If the vehicle is FBT-exempt (e.g., an electric vehicle), no FBT is due. Further information is available at: https://www.ato.gov.au/businesses-and-organisations/hiring-and-paying-your-workers/fringe-benefits-tax/how-fringe-benefits-tax-works  
+METADATA:  
+- page: 4  
+- filename: WhipSmart Novated Lease Overview Brochure.pdf  
+- title: NOVATED LEASE OVERVIEW  
+- section: FBT Reporting  
+- description: Explanation of FBT reporting requirements for employers.  
+- reference_url: https://whipsmart.au/about/  
+---
+
+===Q&A-008===
+Q: What happens to a novated lease if an employee leaves their job?  
+A: If an employee ceases employment, the responsibility for lease payments transfers to the employee. They can transfer the lease to a new employer, make payments directly, refinance, or pay out the remaining lease payments early.  
+METADATA:  
+- page: 4  
+- filename: WhipSmart Novated Lease Overview Brochure.pdf  
+- title: NOVATED LEASE OVERVIEW  
+- section: End of Employment  
+- description: Options for managing a novated lease when employment ends.  
+- reference_url: https://whipsmart.au/about/  
+---
+
+===Q&A-009===
+Q: What are the options at the end of a novated lease?  
+A: At the end of a novated lease, the employee can:  
+1. Sell or trade the car. If the sale price (including GST) exceeds the residual price, the employee retains the difference. If less, they pay the difference.  
+2. Re-lease the car and retain tax benefits. The residual (ex GST) becomes the new vehicle price for calculating lease payments.  
+3. Keep the car by paying off the residual (including GST). Note: GST is applied if the residual is paid out, but not if re-leased.  
+METADATA:  
+- page: 4  
+- filename: WhipSmart Novated Lease Overview Brochure.pdf  
+- title: NOVATED LEASE OVERVIEW  
+- section: Conclusion of the Lease (Residual Options)  
+- description: Explanation of options available at the end of a novated lease.  
+- reference_url: https://whipsmart.au/about/  
+---
+
+===Q&A-010===
+Q: How can someone get started with WhipSmart for novated leasing?  
+A: To get started with WhipSmart, contact them at:  
+- Phone: (07) 2100 0123  
+- Email: info@whipsmart.au  
+- Website: www.whipsmart.au  
+METADATA:  
+- page: 4  
+- filename: WhipSmart Novated Lease Overview Brochure.pdf  
+- title: NOVATED LEASE OVERVIEW  
+- section: Get Started with WhipSmart  
+- description: Contact information for starting a novated lease with WhipSmart.  
+- reference_url: https://whipsmart.au/about/  
+---

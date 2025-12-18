@@ -143,7 +143,7 @@ def get_file_path_from_url(file_url: str) -> Path:
     Returns:
         Path object to the file
     """
-    from urllib.parse import urlparse
+    from urllib.parse import urlparse, unquote
     
     parsed_url = urlparse(file_url)
     
@@ -166,6 +166,9 @@ def get_file_path_from_url(file_url: str) -> Path:
         else:
             relative_path = file_url_normalized[len(media_url_normalized_no_slash):].lstrip('/')
         
+        # Decode URL-encoded characters (e.g., %20 -> space)
+        relative_path = unquote(relative_path)
+        
         file_path = Path(settings.MEDIA_ROOT) / relative_path
         logger.info(f"Resolved relative media URL '{file_url}' to '{file_path}'")
         return file_path
@@ -176,6 +179,8 @@ def get_file_path_from_url(file_url: str) -> Path:
         if parsed_url.netloc in ('localhost', '127.0.0.1', '') or 'localhost' in parsed_url.netloc:
             # Extract path from URL (remove MEDIA_URL prefix if present)
             url_path = parsed_url.path
+            # Decode URL-encoded characters (e.g., %20 -> space)
+            url_path = unquote(url_path)
             # Handle both /media/... and media/... formats
             if url_path.startswith(media_url_normalized):
                 url_path = url_path[len(media_url_normalized):].lstrip('/')
@@ -340,7 +345,7 @@ def process_document(file_url: str, file_type: str, document_id: str, title: str
         for idx, chunk in enumerate(chunks):
             chunk_id = f"{document_id}-chunk-{idx}"
             metadata = {
-                "text": chunk[:2000],  # Limit metadata text length (Pinecone limit)
+                "text": chunk,  # Store full text in metadata (Pinecone supports up to 40KB per metadata field)
                 "source": "whipsmart",
                 "document_id": str(document_id),  # CRITICAL: Store document_id for easy deletion
                 "document_title": title,
