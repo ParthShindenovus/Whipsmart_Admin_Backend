@@ -15,6 +15,7 @@ from agents.state import AgentState
 from agents.tools.rag_tool import rag_tool_node
 from agents.tools.car_tool import car_tool_node
 from agents.agent_prompts import KNOWLEDGE_AGENT_PROMPT
+from agents.multi_agent_reasoning import MultiAgentReasoning
 from openai import AzureOpenAI
 from django.conf import settings
 
@@ -100,18 +101,49 @@ class UnifiedAgent:
             if not is_question:
                 return False, ""
         
-        # User-related keywords that DON'T need RAG
+        # User-related keywords that DON'T need RAG (team connection, info collection, etc.)
+        # CRITICAL: These should ALWAYS bypass RAG - just collect info and acknowledge
         user_action_keywords = [
-            'connect with team', 'connect me', 'speak with', 'talk to', 'contact',
-            'schedule', 'call me', 'reach out', 'get in touch', 'team contact',
-            'my name is', 'my email', 'my phone', 'i am', 'call me back',
+            # Team connection keywords
+            'connect with team', 'connect me', 'connect with', 'connect to team',
+            'speak with', 'speak to', 'talk with', 'talk to', 'talk to someone',
+            'contact', 'contact team', 'contact someone', 'contact us',
+            'schedule', 'schedule a call', 'schedule call', 'book a call',
+            'call me', 'call me back', 'have someone call', 'have someone contact',
+            'reach out', 'reach out to', 'get in touch', 'get in touch with',
+            'team contact', 'team member', 'human', 'person', 'representative',
+            'help me connect', 'want to connect', 'would like to connect',
+            'need to speak', 'need to talk', 'want to speak', 'want to talk',
+            'set up a call', 'arrange a call', 'organize a call',
+            # Information collection keywords
+            'my name is', 'my email', 'my phone', 'my number', 'i am',
+            'email is', 'phone is', 'number is', 'name is',
+            'here is my', 'here\'s my', 'this is my',
+            # Simple responses
             'yes', 'no', 'sure', 'okay', 'ok', 'thanks', 'thank you',
-            'goodbye', 'bye', 'done', 'finished', 'that\'s all', 'no more questions'
+            'goodbye', 'bye', 'done', 'finished', 'that\'s all', 'no more questions',
+            'sounds good', 'that works', 'perfect', 'great'
         ]
         
-        # Check for user action keywords first (fast path)
+        # Check for user action keywords first (fast path) - CRITICAL: bypass RAG
         for keyword in user_action_keywords:
             if keyword in message_lower:
+                logger.info(f"[CLASSIFY] User action detected ('{keyword}') - bypassing RAG")
+                return False, ""
+        
+        # Also check if message is primarily about connecting/contacting (even if keyword not exact match)
+        # This catches variations like "I'd like to connect", "can I speak with", etc.
+        connection_intent_patterns = [
+            r'\b(?:i\s+)?(?:would|want|need|like|wish)\s+(?:to\s+)?(?:connect|speak|talk|contact|reach)',
+            r'\b(?:can|could|may)\s+(?:i|we)\s+(?:connect|speak|talk|contact|reach)',
+            r'\b(?:let|help)\s+(?:me\s+)?(?:connect|speak|talk|contact|reach)',
+            r'\b(?:i\s+)?(?:am|would\s+be)\s+(?:interested\s+in\s+)?(?:connecting|speaking|talking|contacting)',
+            r'\b(?:arrange|set\s+up|book|schedule)\s+(?:a\s+)?(?:call|meeting|conversation)'
+        ]
+        
+        for pattern in connection_intent_patterns:
+            if re.search(pattern, message_lower):
+                logger.info(f"[CLASSIFY] Connection intent detected - bypassing RAG")
                 return False, ""
         
         # Domain keywords that ALWAYS need RAG
@@ -161,8 +193,9 @@ class UnifiedAgent:
                     # Last message asked for info, current message likely provides it - NO RAG
                     return False, ""
         
-        # Default: if unclear, use RAG to be safe (better to have context than not)
-        return True, message_stripped
+        # Default: if unclear, do NOT use RAG - let LLM decide based on conversation context
+        # The LLM will have full conversation history and can use search_knowledge_base tool if needed
+        return False, ""
     
     def handle_message(self, user_message: str) -> Dict:
         """Process user message using LLM with function calling tools."""
@@ -192,8 +225,8 @@ class UnifiedAgent:
         current_phone = self.conversation_data.get('phone', '')
         step = self.conversation_data.get('step', 'chatting')
         
-        # Get conversation history from database
-        conversation_history = self._get_conversation_history()
+        # Get conversation history from database (last 3-4 messages for LLM context)
+        conversation_history = self._get_conversation_history(limit=4)
         
         # STEP 1: Classify question and fetch RAG context if needed (OPTIMIZED: do this first)
         needs_rag, rag_query = self._classify_question(user_message, conversation_history)
@@ -410,19 +443,21 @@ class UnifiedAgent:
                 'escalate_to': None
             }
     
-    def _get_conversation_history(self, limit: int = 20) -> list:
-        """Get conversation history from database."""
+    def _get_conversation_history(self, limit: int = 4) -> list:
+        """Get conversation history from database. Returns last 3-4 messages for LLM context."""
         from chats.models import ChatMessage
         
         try:
+            # Get last N messages ordered by timestamp (most recent first, then reverse)
             messages = ChatMessage.objects.filter(
                 session=self.session,
                 is_deleted=False,
                 role__in=['user', 'assistant']
-            ).order_by('timestamp')[:limit]
+            ).order_by('-timestamp')[:limit]  # Get most recent messages first
             
+            # Reverse to get chronological order (oldest to newest)
             history = []
-            for msg in messages:
+            for msg in reversed(messages):
                 history.append({
                     "role": msg.role,
                     "content": msg.message
@@ -472,18 +507,57 @@ class UnifiedAgent:
         rag_context, knowledge_results, conversation_history
     ) -> Dict:
         """
-        Handle domain questions with RAG context using two-step answer generation:
-        1. Understand question and generate draft answer
-        2. Revalidate and improve the answer
-        3. Generate final thoughtful answer
+        Handle domain questions with RAG context using multi-agent reasoning flow:
+        1. Orchestrator coordinates parallel agents:
+           - Agent 1: Question Classifier
+           - Agent 2: Context/RAG Retriever (already done)
+           - Agent 3: Structure & Length Planner
+           - Agent 4: Must-Have Coverage Definer
+        2. Prompt Assembler combines outputs
+        3. Structured Response Agent generates final answer
         Optimized for speed (5-6 seconds max).
         """
         try:
-            # Format RAG context for LLM
-            context_text = self._format_rag_context(rag_context)
+            # Use Multi-Agent Reasoning System
+            multi_agent = MultiAgentReasoning(client, model)
             
-            # STEP 1: Understand question and generate draft answer
-            understanding_prompt = f"""You are analyzing a user question about WhipSmart services.
+            logger.info("[MULTI-AGENT] Starting multi-agent orchestration...")
+            assistant_message = multi_agent.orchestrate(
+                user_question=user_message,
+                rag_context=rag_context,
+                conversation_history=conversation_history
+            )
+            
+            # Normalize newlines
+            assistant_message = self._normalize_newlines(assistant_message)
+            
+            # Generate suggestions
+            needs_info = self._get_needs_info()
+            suggestions = self._generate_suggestions(assistant_message, user_message, "search_knowledge_base")
+            
+            logger.info("[MULTI-AGENT] Completed multi-agent answer generation")
+            
+            return {
+                'message': assistant_message,
+                'suggestions': suggestions,
+                'complete': False,
+                'needs_info': needs_info,
+                'escalate_to': None,
+                'knowledge_results': knowledge_results,
+                'metadata': {
+                    'knowledge_results': knowledge_results,
+                },
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in multi-agent answer generation: {str(e)}", exc_info=True)
+            # Fallback to original two-step process
+            try:
+                # Format RAG context for LLM
+                context_text = self._format_rag_context(rag_context)
+                
+                # STEP 1: Understand question and generate draft answer
+                understanding_prompt = f"""You are analyzing a user question about WhipSmart services.
 
 USER QUESTION: {user_message}
 
@@ -491,14 +565,31 @@ RELEVANT CONTEXT FROM KNOWLEDGE BASE:
 {context_text}
 
 TASK: 
-1. First, clearly understand what the user is asking
+1. First, clearly understand what the user is asking (informational question)
 2. Identify the key points from the context that answer the question
-3. Generate a draft answer that addresses the question
+3. Generate a comprehensive draft answer that fully addresses the question
+
+CRITICAL: This is an informational answer - apply Answer Quality Layer:
+- Keep answers SHORT - aim for 2-4 key points for most questions
+- Expand answers to cover *what we offer*, *how it works*, and *why it matters* - but keep it concise
+- Address lifecycle coverage: before (setup/onboarding), during (usage/management), after (renewals/options) - only if relevant
+- Include concrete details: operational, financial, digital, and support elements - only what's explicitly in context
+- Cover key dimensions: financial, operational, customer experience, risks/edge cases, long-term implications - only if in context
+- Use clear structure: headings, bullet points, logical grouping
+- REALITY & SCOPE CONSTRAINT (MANDATORY):
+  * Only include capabilities explicitly supported by provided context
+  * Only include services that exist today
+  * Only include benefits that can be delivered immediately
+  * Do NOT invent future features, speculative innovations, roadmap items
+  * Do NOT expand beyond the given context
+  * If unsure, exclude it
+- Ensure the answer fully stands on its own without requiring follow-up
+- Ensure answer would be acceptable to an enterprise client
 
 Provide your analysis in this format:
-UNDERSTANDING: [What is the user really asking?]
-KEY_POINTS: [List the main points from context that answer this]
-DRAFT_ANSWER: [Your initial draft answer]
+UNDERSTANDING: [What is the user really asking? What type of question is this - exploratory, operational, or decision-making?]
+KEY_POINTS: [List 2-4 main points from context that answer this - avoid duplication, only what's explicitly in context]
+DRAFT_ANSWER: [Your SHORT draft answer (2-4 key points) with clear structure, covering what/how/why. CRITICAL: Apply density discipline - prefer concise high-value statements, avoid repetition, each paragraph/bullet must introduce distinct capability or outcome. Only include what exists today and is in the provided context.]
 
 CRITICAL: USE POSITIVE, RESPECTFUL LANGUAGE
 - NEVER use negative or rude language (e.g., "if you can't afford", "if you don't have", "if you're unable to")
@@ -519,23 +610,23 @@ Example:
 \n\n
 So, whether you're after a new car or a lease, we're here to help!"""
 
-            understanding_messages = [
+                understanding_messages = [
                 {"role": "system", "content": "You are a helpful assistant that analyzes questions and generates answers."},
-                {"role": "user", "content": understanding_prompt}
-            ]
-            
-            logger.info("[TWO-STEP] Step 1: Understanding question and generating draft...")
-            understanding_response = client.chat.completions.create(
-                model=model,
-                messages=understanding_messages,
-                temperature=0.3,
-                max_tokens=800
-            )
-            
-            draft_analysis = understanding_response.choices[0].message.content.strip()
-            
-            # STEP 2: Revalidate and improve the answer
-            revalidation_prompt = f"""You are reviewing and improving an answer about WhipSmart services.
+                    {"role": "user", "content": understanding_prompt}
+                ]
+                
+                logger.info("[TWO-STEP] Step 1: Understanding question and generating draft...")
+                understanding_response = client.chat.completions.create(
+                    model=model,
+                    messages=understanding_messages,
+                    temperature=0.3,
+                    max_tokens=600  # Reduced for shorter draft answers
+                )
+                
+                draft_analysis = understanding_response.choices[0].message.content.strip()
+                
+                # STEP 2: Revalidate and improve the answer
+                revalidation_prompt = f"""You are reviewing and improving an answer about WhipSmart services.
 
 ORIGINAL QUESTION: {user_message}
 
@@ -546,17 +637,37 @@ RELEVANT CONTEXT:
 {context_text}
 
 TASK:
-1. Review the draft answer - does it fully answer the user's question?
+1. Review the draft answer - does it fully answer the user's informational question without requiring follow-up?
 2. Check if any important information from the context is missing
-3. Verify the answer is accurate and complete
-4. Improve the answer to be more thoughtful, clear, and helpful
-5. Ensure the answer directly addresses what the user asked
-6. CRITICAL: Check for and remove any negative, rude, or insensitive language - reframe into positive alternatives
+3. Verify the answer covers lifecycle phases (before/during/after) where relevant
+4. Ensure concrete details are included (operational, financial, digital, support)
+5. Verify key dimensions are covered: financial, operational, customer experience, risks/edge cases, long-term implications
+6. Verify the answer explains what we offer, how it works, and why it matters
+7. Check structure: clear headings, bullet points, logical grouping
+8. Ensure ongoing obligations, commitments, and what happens if circumstances change are addressed
+9. Improve the answer to be more thoughtful, clear, and comprehensive
+10. Ensure the answer directly addresses what the user asked
+11. CRITICAL: Check for and remove any negative, rude, or insensitive language - reframe into positive alternatives
+12. Verify the answer would satisfy an enterprise client or RFP reviewer
+
+CONTENT COMPLETENESS CHECK:
+- [ ] Have all major service components been mentioned?
+- [ ] Is the value to the customer clearly explained?
+- [ ] Are management, tools, and ongoing support included?
+- [ ] Is pricing, transparency, or compliance addressed where applicable?
+- [ ] Does the answer cover before, during, and after phases where relevant?
+- [ ] Are ongoing obligations or commitments mentioned?
+- [ ] Are financial impacts clearly explained?
+- [ ] Is what happens if circumstances change addressed?
+- [ ] Would this satisfy someone making a business decision?
+- [ ] Would this be acceptable to an enterprise client?
 
 Provide your improved answer in this format:
-IS_COMPLETE: [Yes/No - does the draft fully answer the question?]
-MISSING_INFO: [Any important information that should be added]
-IMPROVED_ANSWER: [Your final, improved answer that is thoughtful and complete]
+IS_COMPLETE: [Yes/No - does the draft fully answer the question without requiring follow-up?]
+MISSING_INFO: [Any important information that should be added - lifecycle phases, concrete details, operational elements - only if explicitly in context]
+REDUNDANCY_CHECK: [Identify any repeated benefits, filler, duplicate information, or speculative content that should be removed]
+REALITY_CHECK: [Verify answer only includes capabilities/services/benefits explicitly in context that exist today - remove any invented features]
+IMPROVED_ANSWER: [Your final, SHORT answer (2-4 key points) that is thoughtful, complete, well-structured. CRITICAL: Apply density discipline - concise high-value statements, no repetition, each paragraph/bullet introduces distinct capability/outcome, compressed without losing coverage. REALITY CONSTRAINT: Only include what exists today and is explicitly in the provided context.]
 
 CRITICAL: USE POSITIVE, RESPECTFUL LANGUAGE
 - NEVER use negative or rude language (e.g., "if you can't afford", "if you don't have", "if you're unable to")
@@ -577,29 +688,36 @@ Example:
 \n\n
 So, whether you're after a new car or a lease, we're here to help!"""
 
-            revalidation_messages = [
-                {"role": "system", "content": "You are a quality assurance assistant that reviews and improves answers."},
-                {"role": "user", "content": revalidation_prompt}
-            ]
-            
-            logger.info("[TWO-STEP] Step 2: Revalidating and improving answer...")
-            revalidation_response = client.chat.completions.create(
-                model=model,
-                messages=revalidation_messages,
-                temperature=0.4,
-                max_tokens=1000
-            )
-            
-            improved_analysis = revalidation_response.choices[0].message.content.strip()
-            
-            # STEP 3: Extract final answer and format it properly
-            final_answer = self._extract_final_answer(improved_analysis, draft_analysis)
-            
-            # Build final messages with conversation context
-            final_messages = [
-                {
-                    "role": "system",
-                    "content": f"""You are Alex AI, WhipSmart's Unified Assistant with a warm, friendly, professional Australian accent.
+                revalidation_messages = [
+                    {"role": "system", "content": "You are a quality assurance assistant that reviews and improves answers."},
+                    {"role": "user", "content": revalidation_prompt}
+                ]
+                
+                logger.info("[TWO-STEP] Step 2: Revalidating and improving answer...")
+                revalidation_response = client.chat.completions.create(
+                    model=model,
+                    messages=revalidation_messages,
+                    temperature=0.4,
+                    max_tokens=700  # Reduced for shorter improved answers
+                )
+                
+                improved_analysis = revalidation_response.choices[0].message.content.strip()
+                
+                # STEP 3: Extract final answer and format it properly
+                final_answer = self._extract_final_answer(improved_analysis, draft_analysis)
+                
+                # Build final messages with last 3-4 messages for context
+                # Use the messages parameter which already contains last 3-4 conversation history from handle_message
+                # Update the system message to include the final answer, but keep conversation history
+                final_messages = []
+                # Find and replace the system message, keep conversation history
+                system_message_found = False
+                for msg in messages:
+                    if msg.get("role") == "system" and not system_message_found:
+                        # Replace system message with updated one that includes final answer
+                        final_messages.append({
+                            "role": "system",
+                            "content": f"""You are Alex AI, WhipSmart's Unified Assistant with a warm, friendly, professional Australian accent.
 
 IMPORTANT: Use the following answer as the basis for your response. Format it naturally with Australian expressions, but keep it professional and helpful.
 
@@ -607,11 +725,14 @@ ANSWER TO USE:
 {final_answer}
 
 Remember:
+- You are Alex, a subject-matter expert - deliver clear, structured, end-to-end answers
 - Use professional Australian expressions naturally (e.g., "no worries", "how are you going", "fair enough")
-- Keep the tone warm, friendly, and professional
+- Keep the tone professional, confident, and informative (clarity and completeness come first)
 - CRITICAL: USE POSITIVE, RESPECTFUL LANGUAGE - NEVER use negative or rude language
 - Reframe negative statements into positive alternatives (e.g., "You also have options to:" instead of "If you can't afford, you may:")
-- Format with markdown: **bold** for emphasis, single line breaks (\n) for structure
+- CRITICAL: ALWAYS consider the conversation history (last 3-4 messages) when responding - use it to provide contextually aware answers
+- Format with markdown: **bold** for emphasis, headings for major sections, single line breaks (\n) for structure
+- Use clear headings or bullet points to organize information logically
 - CRITICAL: Use ONLY single \n for line breaks within content - frontend converts each \n to <br> tag
 - EXCEPTION: When concluding/leaving a list (transitioning from list items to regular text), use \n\n (double newline) for proper visual separation
 - CRITICAL: For nested lists, use exactly 4 spaces (not 3) for indentation per CommonMark specification
@@ -621,55 +742,115 @@ Remember:
       - Purchase the vehicle.
   \n\n
   So, whether you're after a new car or a lease, we're here to help!
-- Keep it concise (2-4 sentences) but complete
-- If the user asked a specific question, make sure your answer directly addresses it"""
-                }
-            ]
-            # Add conversation history for context
-            final_messages.extend(conversation_history[-3:])  # Last 3 messages for context
-            final_messages.append({"role": "user", "content": user_message})
-            
-            logger.info("[TWO-STEP] Step 3: Generating final formatted answer...")
-            final_response = client.chat.completions.create(
-                model=model,
-                messages=final_messages,
-                temperature=0.7,
-                max_tokens=600
-            )
-            
-            assistant_message = final_response.choices[0].message.content.strip()
-            
-            # Normalize newlines: replace multiple newlines with single newline (frontend converts \n to <br>)
-            assistant_message = self._normalize_newlines(assistant_message)
-            
-            # Generate suggestions
-            needs_info = self._get_needs_info()
-            suggestions = self._generate_suggestions(assistant_message, user_message, "search_knowledge_base")
-            
-            logger.info("[TWO-STEP] Completed two-step answer generation")
-            
-            return {
-                'message': assistant_message,
-                'suggestions': suggestions,
-                'complete': False,
-                'needs_info': needs_info,
-                'escalate_to': None,
-                'knowledge_results': knowledge_results,
-                'metadata': {
+- ANSWER DENSITY & DISCIPLINE: Prefer concise high-value statements, avoid repetition, remove filler, each paragraph/bullet introduces distinct capability/outcome, compress without losing coverage
+- Ensure the answer fully stands on its own - comprehensive but dense, thorough but concise
+- Cover lifecycle phases (before/during/after) where relevant
+- Include concrete details: operational, financial, digital, support elements
+- If the answer feels long, compress it without losing coverage
+- If the user asked a specific question, make sure your answer directly addresses it comprehensively"""
+                        })
+                        system_message_found = True
+                    else:
+                        # Keep conversation history (last 3-4 messages)
+                        final_messages.append(msg)
+                
+                # If no system message was found, add it at the beginning
+                if not system_message_found:
+                    final_messages.insert(0, {
+                        "role": "system",
+                        "content": f"""You are Alex AI, WhipSmart's Unified Assistant with a warm, friendly, professional Australian accent.
+
+IMPORTANT: Use the following answer as the basis for your response. Format it naturally with Australian expressions, but keep it professional and helpful.
+
+ANSWER TO USE:
+{final_answer}
+
+Remember:
+- You are Alex, a subject-matter expert - deliver clear, structured, end-to-end answers
+- Use professional Australian expressions naturally (e.g., "no worries", "how are you going", "fair enough")
+- Keep the tone professional, confident, and informative (clarity and completeness come first)
+- CRITICAL: USE POSITIVE, RESPECTFUL LANGUAGE - NEVER use negative or rude language
+- Reframe negative statements into positive alternatives (e.g., "You also have options to:" instead of "If you can't afford, you may:")
+- CRITICAL: ALWAYS consider the conversation history (last 3-4 messages) when responding - use it to provide contextually aware answers
+- Format with markdown: **bold** for emphasis, headings for major sections, single line breaks (\n) for structure
+- Use clear headings or bullet points to organize information logically
+- CRITICAL: Use ONLY single \n for line breaks within content - frontend converts each \n to <br> tag
+- EXCEPTION: When concluding/leaving a list (transitioning from list items to regular text), use \n\n (double newline) for proper visual separation
+- CRITICAL: For nested lists, use exactly 4 spaces (not 3) for indentation per CommonMark specification
+  Example: 
+  1. **At the end of the lease**, you have options to:
+      - Return the vehicle.  (4 spaces before the dash)
+      - Purchase the vehicle.
+  \n\n
+  So, whether you're after a new car or a lease, we're here to help!
+- ANSWER DENSITY & DISCIPLINE: Prefer concise high-value statements, avoid repetition, remove filler, each paragraph/bullet introduces distinct capability/outcome, compress without losing coverage
+- Ensure the answer fully stands on its own - comprehensive but dense, thorough but concise
+- Cover lifecycle phases (before/during/after) where relevant
+- Include concrete details: operational, financial, digital, support elements
+- If the answer feels long, compress it without losing coverage
+- If the user asked a specific question, make sure your answer directly addresses it comprehensively"""
+                    })
+                
+                logger.info("[TWO-STEP] Step 3: Generating final formatted answer...")
+                final_response = client.chat.completions.create(
+                    model=model,
+                    messages=final_messages,
+                    temperature=0.7,
+                    max_tokens=600  # Reduced for shorter, more concise answers
+                )
+                
+                assistant_message = final_response.choices[0].message.content.strip()
+                
+                # Normalize newlines: replace multiple newlines with single newline (frontend converts \n to <br>)
+                assistant_message = self._normalize_newlines(assistant_message)
+                
+                # Generate suggestions
+                needs_info = self._get_needs_info()
+                suggestions = self._generate_suggestions(assistant_message, user_message, "search_knowledge_base")
+                
+                logger.info("[TWO-STEP] Completed two-step answer generation")
+                
+                return {
+                    'message': assistant_message,
+                    'suggestions': suggestions,
+                    'complete': False,
+                    'needs_info': needs_info,
+                    'escalate_to': None,
                     'knowledge_results': knowledge_results,
-                },
-            }
-            
-        except Exception as e:
-            logger.error(f"Error in two-step answer generation: {str(e)}", exc_info=True)
-            # Fallback to simple answer
-            context_text = self._format_rag_context(rag_context)
-            fallback_prompt = f"""Based on the following context, answer the user's question: {user_message}
+                    'metadata': {
+                        'knowledge_results': knowledge_results,
+                    },
+                }
+            except Exception as e2:
+                logger.error(f"Error in fallback two-step process: {str(e2)}", exc_info=True)
+                # Final fallback to simple answer with last 3-4 messages for context
+                context_text = self._format_rag_context(rag_context)
+                fallback_prompt = f"""Based on the following context, answer the user's question: {user_message}
 
 Context:
 {context_text}
 
-Provide a clear, helpful answer with a professional Australian accent.
+Provide a clear, CONCISE, structured answer with a professional Australian accent.
+
+CRITICAL: This is an informational answer - apply Answer Quality Layer (non-disruptive):
+- Keep answers SHORT - aim for 2-4 key points for most questions, 4-6 for complex ones
+- Expand answers to cover *what we offer*, *how it works*, and *why it matters* - but keep it concise
+- Address lifecycle coverage: before (setup/onboarding), during (usage/management), after (renewals/options) - only if relevant
+- Include concrete details: operational, financial, digital, and support elements - only what's explicitly in context
+- Cover key dimensions: financial, operational, customer experience, risks/edge cases, long-term implications - only if in context
+- Include ongoing obligations, commitments, and what happens if circumstances change - only if explicitly stated
+- Use clear structure: headings, bullet points, logical grouping
+- ANSWER DENSITY & DISCIPLINE: Prefer concise high-value statements, avoid repetition, remove filler, each paragraph/bullet introduces distinct capability/outcome, compress without losing coverage
+- REALITY & SCOPE CONSTRAINT (MANDATORY):
+  * Only include capabilities explicitly supported by provided context
+  * Only include services that exist today
+  * Only include benefits that can be delivered immediately
+  * Do NOT invent future features, speculative innovations, roadmap items
+  * Do NOT expand beyond the given context
+  * Do NOT add "nice-to-have" services unless explicitly stated
+  * If unsure, exclude it
+- Ensure the answer fully stands on its own without requiring follow-up
+- Ensure answer would be acceptable to an enterprise client
 
 CRITICAL: USE POSITIVE, RESPECTFUL LANGUAGE
 - NEVER use negative or rude language (e.g., "if you can't afford", "if you don't have", "if you're unable to")
@@ -678,6 +859,7 @@ CRITICAL: USE POSITIVE, RESPECTFUL LANGUAGE
 - Use supportive, helpful language that empowers users
 - Focus on solutions and options, not limitations or problems
 - Be respectful and professional at all times
+- CRITICAL: ALWAYS consider the conversation history (last 3-4 messages) when responding - use it to provide contextually aware answers
 
 IMPORTANT: 
 - Use ONLY single \n for line breaks within content - frontend converts each \n to <br> tag
@@ -689,36 +871,57 @@ Example:
     - Another nested item
 \n\n
 So, whether you're after a new car or a lease, we're here to help!"""
-            
-            fallback_messages = [
-                {"role": "system", "content": "You are Alex AI, WhipSmart's assistant with a professional Australian accent."},
-                {"role": "user", "content": fallback_prompt}
-            ]
-            
-            fallback_response = client.chat.completions.create(
-                model=model,
-                messages=fallback_messages,
-                temperature=0.7,
-                max_tokens=500
-            )
-            
-            assistant_message = fallback_response.choices[0].message.content.strip()
-            # Normalize newlines: replace multiple newlines with single newline (frontend converts \n to <br>)
-            assistant_message = self._normalize_newlines(assistant_message)
-            needs_info = self._get_needs_info()
-            suggestions = self._generate_suggestions(assistant_message, user_message, "search_knowledge_base")
-            
-            return {
-                'message': assistant_message,
-                'suggestions': suggestions,
-                'complete': False,
-                'needs_info': needs_info,
-                'escalate_to': None,
-                'knowledge_results': knowledge_results,
-                'metadata': {
+                
+                # Use the messages parameter which already contains last 3-4 conversation history
+                # Update system message but keep conversation history
+                fallback_messages = []
+                system_message_found = False
+                for msg in messages:
+                    if msg.get("role") == "system" and not system_message_found:
+                        # Replace with updated system message
+                        fallback_messages.append({
+                            "role": "system",
+                            "content": "You are Alex AI, WhipSmart's assistant with a professional Australian accent. CRITICAL: ALWAYS consider the conversation history (last 3-4 messages) when responding - use it to provide contextually aware answers."
+                        })
+                        system_message_found = True
+                    else:
+                        # Keep conversation history (last 3-4 messages)
+                        fallback_messages.append(msg)
+                
+                # Add the fallback prompt as user message
+                fallback_messages.append({"role": "user", "content": fallback_prompt})
+                
+                # If no system message was found, add it at the beginning
+                if not system_message_found:
+                    fallback_messages.insert(0, {
+                        "role": "system",
+                        "content": "You are Alex AI, WhipSmart's assistant with a professional Australian accent. CRITICAL: ALWAYS consider the conversation history (last 3-4 messages) when responding - use it to provide contextually aware answers."
+                    })
+                
+                fallback_response = client.chat.completions.create(
+                    model=model,
+                    messages=fallback_messages,
+                    temperature=0.7,
+                    max_tokens=500  # Reduced for shorter, more concise answers
+                )
+                
+                assistant_message = fallback_response.choices[0].message.content.strip()
+                # Normalize newlines: replace multiple newlines with single newline (frontend converts \n to <br>)
+                assistant_message = self._normalize_newlines(assistant_message)
+                needs_info = self._get_needs_info()
+                suggestions = self._generate_suggestions(assistant_message, user_message, "search_knowledge_base")
+                
+                return {
+                    'message': assistant_message,
+                    'suggestions': suggestions,
+                    'complete': False,
+                    'needs_info': needs_info,
+                    'escalate_to': None,
                     'knowledge_results': knowledge_results,
-                },
-            }
+                    'metadata': {
+                        'knowledge_results': knowledge_results,
+                    },
+                }
     
     def _format_rag_context(self, rag_context: list) -> str:
         """Format RAG context chunks for LLM consumption."""
@@ -798,7 +1001,7 @@ CONVERSION STRATEGY:
 - IMPORTANT: Do NOT ask for name and offer team connection in the same message - keep them separate
 
 CRITICAL: UNDERSTAND USER INTENT AND ASK CLARIFYING QUESTIONS
-- ALWAYS read the FULL conversation history to understand what the user is asking
+- ALWAYS read the conversation history (last 3-4 messages) to understand what the user is asking
 - If user's question is unclear or ambiguous, ASK CLARIFYING QUESTIONS to better understand their needs
 - Examples of clarifying questions:
   * "Are you looking for information about novated leases, or do you have a specific question about our services?"
@@ -853,39 +1056,123 @@ CRITICAL: When user provides contact details:
 - Ask if they need any other help or if they're done
 - Do NOT search knowledge base or provide generic contact information when user is submitting their details
 
-RESPONSE GUIDELINES:
-- Keep responses CONCISE (2-4 sentences maximum)
-- Be clear and direct
-- Use knowledge base to answer questions accurately
-- Ask clarifying questions when user intent is unclear
+ANSWER QUALITY LAYER (NON-DISRUPTIVE) - APPLIES ONLY TO INFORMATIONAL ANSWERS:
+
+CRITICAL: This quality layer applies ONLY when answering informational, explanatory, or decision-support questions.
+DO NOT apply when:
+- The system is collecting user details (name, contact info) - follow existing behavior exactly
+- The system is offering team connection or escalation - follow existing behavior exactly
+- The system is following a scripted flow - follow existing behavior exactly
+- The system asks you to ask a question - follow existing behavior exactly
+
+Your responsibility is limited to **how answers are written**, not **what actions are taken**.
+
+WHEN TO APPLY THIS QUALITY LAYER:
+Apply these rules ONLY when:
+- The user asks an informational, explanatory, or decision-support question about WhipSmart services
+- You are providing knowledge-based answers using search_knowledge_base tool results
+- You are explaining concepts, processes, benefits, or features
+
+DO NOT apply when:
+- Collecting user information (name, email, phone)
+- Offering team connection
+- Following scripted conversation flows
+- Asking clarifying questions
+- Ending conversations
+
+CORE OBJECTIVE (for informational answers only):
+- Provide **clear, structured, and complete answers**
+- Use the provided context accurately
+- Cover the full lifecycle and real-world implications
+- Match the depth expected of an expert assistant
+
+INTERNAL REASONING STEPS (DO NOT OUTPUT - internal only):
+Before answering informational questions:
+1. Identify the intent of the user question
+2. Identify required depth (default to comprehensive)
+3. Identify key dimensions:
+   - Financial
+   - Operational
+   - Customer experience
+   - Risks and edge cases
+   - Long-term implications
+
+RESPONSE STRUCTURE RULES (for informational answers):
+- Use structured bullets or headings
+- Explain:
+  - What it is
+  - How it works
+  - Why it matters
+- Avoid generic marketing language without explanation
+- Use markdown formatting: **bold** for emphasis, headings for major sections, single line breaks (\n) for structure
+- CRITICAL: Use ONLY single \n for line breaks within content - frontend converts each \n to <br> tag
+- EXCEPTION: When concluding/leaving a list (transitioning from list items to regular text), use \n\n (double newline) for proper visual separation
+- CRITICAL: For nested lists in markdown, ALWAYS use exactly 4 spaces (not 3) for indentation per CommonMark specification
+
+CONTENT COMPLETENESS CHECK (for informational answers):
+Ensure the answer includes, where relevant:
+- End-to-end lifecycle coverage (before/during/after)
+- Ongoing obligations or commitments
+- Financial impacts
+- What happens if circumstances change
+- Transparency and support mechanisms
+- Operational, financial, digital, and support-related elements
+
+If something important is missing, expand the answer.
+
+TONE & STYLE (for informational answers):
+- Professional and confident
+- Friendly but not casual
+- No emojis
+- No unnecessary enthusiasm
+- Prioritize clarity and completeness
+- Use professional Australian accent naturally (e.g., "no worries", "how are you going", "fair enough")
+- CRITICAL: USE POSITIVE, RESPECTFUL LANGUAGE - NEVER use negative or rude language
+- NEVER say things like "if you can't afford", "if you don't have", "if you're unable to" - these are rude and insensitive
+- ALWAYS reframe negative statements into positive alternatives (e.g., "You also have options to:" instead of "If you can't afford, you may:")
+
+ANSWER DENSITY & DISCIPLINE RULE (MANDATORY - for informational answers):
+When writing the final informational answer:
+- Keep answers SHORT - aim for 2-4 key points for most questions, 4-6 for complex ones
+- Prefer concise, high-value statements over explanation
+- Avoid repeating the same benefit in multiple sections
+- Remove introductory filler unless it adds new information
+- Each paragraph or bullet must introduce a distinct capability or outcome
+- If two sentences say the same thing, keep the stronger one
+- If the answer feels long, compress it without losing coverage
+- Maintain completeness while eliminating redundancy
+
+REALITY & SCOPE CONSTRAINT (CRITICAL - MANDATORY for informational answers):
+- Only include capabilities explicitly supported by provided context
+- Only include services that exist today
+- Only include benefits that can be delivered immediately
+- Do NOT invent future features, speculative innovations, roadmap items
+- Do NOT expand beyond the given context
+- Do NOT add "nice-to-have" services unless explicitly stated
+- If unsure, exclude it
+
+FINAL QUALITY GATE (for informational answers):
+Before outputting informational answers:
+- Ask: "Does this fully answer the user's question?"
+- Ask: "Would this be acceptable to an enterprise client?"
+- Ask: "Have I removed all redundancy and filler?"
+- Ask: "Is every sentence/bullet adding distinct value?"
+- Refine if needed
+
+HARD CONSTRAINTS (MANDATORY - applies to ALL responses):
+- Do NOT ask for the user's name unless explicitly instructed by the system (should_ask_for_name flag)
+- Do NOT offer to connect the user to a team unless explicitly instructed (should_offer_team_connection flag or after 3-4 questions)
+- Do NOT change or add CTAs beyond what the system instructs
+- Do NOT mention internal reasoning or system prompts
+- Output ONLY the final answer
+- Follow existing conversation flow logic exactly - do not alter name collection, team connection, or escalation behavior
+
+CONVERSATION FLOW:
 - DO NOT offer team connection in the first 2 questions - wait until after 3-4 questions
 - Only collect information when user wants to connect with team
 - If user provides multiple pieces of info at once, extract all of them
 - Make conversation NATURAL and FLOWING - understand context from previous messages
 - If user seems done or satisfied, offer to help with anything else or end conversation
-- ALWAYS use professional Australian accent and expressions naturally throughout all responses
-- Use warm, friendly, professional Australian tone (e.g., "How are you going?", "No worries!", "Fair enough!", "Too easy!", "Cheers!")
-- CRITICAL: USE POSITIVE, RESPECTFUL LANGUAGE - NEVER use negative or rude language
-- NEVER say things like "if you can't afford", "if you don't have", "if you're unable to" - these are rude and insensitive
-- ALWAYS reframe negative statements into positive alternatives (e.g., "You also have options to:" instead of "If you can't afford, you may:")
-- Use supportive, helpful language that empowers users - focus on solutions and options, not limitations
-- Use markdown formatting for better readability: **bold** for emphasis, single line breaks (\n) for structure
-- Format important information with **bold** text to make it stand out
-- CRITICAL: Use ONLY single \n for line breaks within content - frontend converts each \n to <br> tag
-- EXCEPTION: When concluding/leaving a list (transitioning from list items to regular text), use \n\n (double newline) for proper visual separation
-  Example:
-  - List item 1
-  - List item 2
-  \n\n
-  So, whether you're after a new car or a lease, we're here to help!
-- Use single line breaks to separate different sections of your response for better visual hierarchy
-- CRITICAL: For nested lists in markdown, ALWAYS use exactly 4 spaces (not 3) for indentation per CommonMark specification
-  Example of correct nested list formatting:
-  1. **At the end of the lease**, you have options to:
-      - Return the vehicle.  (4 spaces before the dash)
-      - Purchase the vehicle.
-      - Extend the lease.
-  This ensures proper rendering in ReactMarkdown with remarkGfm
 
 TOOLS AVAILABLE:
 - search_knowledge_base: Search WhipSmart knowledge base for answers
@@ -897,12 +1184,15 @@ TOOLS AVAILABLE:
 - end_conversation: End the conversation gracefully when user is done
 
 UNDERSTANDING USER PROMPTS:
-- Analyze the user's message carefully - what are they really asking?
+- CRITICAL: ALWAYS read and analyze the conversation history (last 3-4 messages) before answering any question
+- The conversation history is provided to you - use it to understand the context of what the user is asking
+- Analyze the user's message carefully in the context of previous messages - what are they really asking?
 - Look for keywords and intent: pricing, vehicles, process, benefits, etc.
 - If the question is too broad (e.g., "tell me about leasing"), ask what specific aspect they want to know
 - If the question is unclear, ask a clarifying question BEFORE searching knowledge base
 - Use conversation history to understand context and follow-up questions
 - CRITICAL: For ANY question about WhipSmart, novated leases, inclusions, costs, tax, benefits, risks, eligibility, or the leasing process, you MUST call the search_knowledge_base tool FIRST, then answer using the retrieved information.
+- The LLM has access to the last 3-4 messages in conversation history - use it to provide contextually aware responses
 
 EXAMPLES:
 - If you asked "Would you like to connect with our team?" and user says "yes" → Use collect_user_info tool or ask_for_missing_field
@@ -1379,8 +1669,8 @@ Remember: You are Alex AI with a professional Australian accent - be warm, frien
         """Generate contextual suggestions to guide users toward connecting with team."""
         from agents.suggestions import generate_suggestions
         
-        # Get conversation history for context
-        conversation_history = self._get_conversation_history(limit=10)
+        # Get conversation history for context (last 3-4 messages)
+        conversation_history = self._get_conversation_history(limit=4)
         
         # If user is already in lead collection flow, don't show suggestions
         if self.conversation_data.get('step') in ['confirmation', 'complete']:
