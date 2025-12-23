@@ -92,14 +92,23 @@ class UnifiedAgent:
         current_phone = self.conversation_data.get('phone', '')
         step = self.conversation_data.get('step', 'chatting')
         
+        # Get conversation history from database
+        conversation_history = self._get_conversation_history()
+        
+        # Check if we should subtly ask for name (after 3-4 questions without name)
+        should_ask_for_name = self._should_ask_for_name(conversation_history, current_name)
+        
+        # Check if we should offer team connection (after 3-4 questions, but separately from name)
+        should_offer_team_connection = self._should_offer_team_connection(conversation_history)
+        
         # Build system prompt
-        system_prompt = self._build_system_prompt(current_name, current_email, current_phone, step)
+        system_prompt = self._build_system_prompt(
+            current_name, current_email, current_phone, step, 
+            should_ask_for_name, should_offer_team_connection
+        )
         
         # Define all available tools
         tools = self._get_tools()
-        
-        # Get conversation history from database
-        conversation_history = self._get_conversation_history()
         
         # Build messages with full conversation history
         messages = [{"role": "system", "content": system_prompt}]
@@ -295,7 +304,41 @@ class UnifiedAgent:
             logger.error(f"Error getting conversation history: {str(e)}")
             return []
     
-    def _build_system_prompt(self, name: str, email: str, phone: str, step: str) -> str:
+    def _should_ask_for_name(self, conversation_history: list, current_name: str) -> bool:
+        """
+        Check if we should subtly ask for the user's name.
+        Returns True if:
+        - User has asked 3-4 questions (user messages)
+        - Name is not yet collected
+        
+        Note: We count user messages in history. The current message being processed
+        is not yet in history, so if history has 2-3 user messages, the current one
+        is the 3rd or 4th question.
+        """
+        if current_name:
+            return False
+        
+        # Count user messages (questions) in conversation history
+        user_message_count = sum(1 for msg in conversation_history if msg.get('role') == 'user')
+        
+        # After 3-4 questions (current message is 3rd or 4th), we should ask for name
+        # If history has 2-3 user messages, the current one is the 3rd or 4th
+        return 2 <= user_message_count <= 3
+    
+    def _should_offer_team_connection(self, conversation_history: list) -> bool:
+        """
+        Check if we should offer team connection.
+        Returns True if user has asked 3-4 questions (same as name asking).
+        This ensures we don't offer team connection at the start.
+        """
+        # Count user messages (questions) in conversation history
+        user_message_count = sum(1 for msg in conversation_history if msg.get('role') == 'user')
+        
+        # After 3-4 questions (current message is 3rd or 4th), we can offer team connection
+        # If history has 2-3 user messages, the current one is the 3rd or 4th
+        return 2 <= user_message_count <= 3
+    
+    def _build_system_prompt(self, name: str, email: str, phone: str, step: str, should_ask_for_name: bool = False, should_offer_team_connection: bool = False) -> str:
         """Build system prompt based on current state."""
         prompt = """You are Alex AI, WhipSmart's Unified Assistant with a warm, friendly, professional Australian accent. Your PRIMARY GOAL is to help users understand WhipSmart's services AND convert them to connect with our team.
 
@@ -309,14 +352,15 @@ CRITICAL: You MUST speak with a professional Australian accent throughout all in
 MAIN GOAL: Understand user's intent, answer their questions, and CONVERT users to connect with our team.
 
 CONVERSION STRATEGY:
-- After answering questions, PROACTIVELY offer to connect them with our team
-- When user shows interest (asks about pricing, benefits, getting started, etc.), immediately offer team connection
+- DO NOT offer team connection at the start of the conversation (first 2 questions)
+- After the user has asked 3-4 questions, you can PROACTIVELY offer to connect them with our team
+- When user shows interest (asks about pricing, benefits, getting started, etc.) AFTER 3-4 questions, offer team connection
 - Use phrases like:
-  * "Would you like to connect with our team to explore your options?"
+  * "Would you like to connect with our team to explore how a novated lease could work for you? They can provide more personalised assistance!"
   * "I can connect you with our team to get personalized assistance. Would you like me to do that?"
   * "Are you interested in learning more? We can connect you with our team."
-- Don't wait for user to ask - be proactive in offering team connection
 - Make it natural and helpful, not pushy
+- IMPORTANT: Do NOT ask for name and offer team connection in the same message - keep them separate
 
 CRITICAL: UNDERSTAND USER INTENT AND ASK CLARIFYING QUESTIONS
 - ALWAYS read the FULL conversation history to understand what the user is asking
@@ -348,14 +392,16 @@ YOUR CAPABILITIES:
 3. Collect user information when they want to connect with our team
 4. Ask clarifying questions when user intent is unclear
 5. End conversation gracefully when user is done
-6. PROACTIVELY offer team connection after answering questions
+6. Offer team connection after 3-4 questions (not at the start)
 
-WHEN TO OFFER TEAM CONNECTION (BE PROACTIVE):
-- After answering any question about pricing, benefits, or services
-- When user asks about getting started, application process, or next steps
-- When user shows interest (keywords: interested, want to, explore, learn more, etc.)
-- After providing information - always offer: "Would you like to connect with our team to explore your options?"
-- When user seems satisfied with an answer - offer: "Are you interested in learning more? We can connect you with our team."
+WHEN TO OFFER TEAM CONNECTION:
+- ONLY after the user has asked 3-4 questions (NOT at the start)
+- After answering questions about pricing, benefits, or services (but only after 3-4 questions)
+- When user asks about getting started, application process, or next steps (but only after 3-4 questions)
+- When user shows interest (keywords: interested, want to, explore, learn more, etc.) (but only after 3-4 questions)
+- After providing information - offer: "Would you like to connect with our team to explore how a novated lease could work for you? They can provide more personalised assistance!"
+- IMPORTANT: Do NOT offer team connection in the first 2 questions - wait until after 3-4 questions
+- IMPORTANT: Do NOT ask for name and offer team connection together - keep them separate
 
 WHEN TO COLLECT USER INFORMATION:
 - User says "yes" to connecting with team
@@ -370,7 +416,7 @@ RESPONSE GUIDELINES:
 - Be clear and direct
 - Use knowledge base to answer questions accurately
 - Ask clarifying questions when user intent is unclear
-- PROACTIVELY offer team connection after answering questions
+- DO NOT offer team connection in the first 2 questions - wait until after 3-4 questions
 - Only collect information when user wants to connect with team
 - If user provides multiple pieces of info at once, extract all of them
 - Make conversation NATURAL and FLOWING - understand context from previous messages
@@ -405,15 +451,27 @@ EXAMPLES:
 - If user says "I'm done", "no more questions", "thank you, goodbye", "that's all" → Use end_conversation tool
 - If user's question is vague like "tell me about leasing" → Ask clarifying question: "Would you like to know about novated leases, the leasing process, or vehicle options?"
 - If user asks "what are the benefits?" without context → Ask: "Are you asking about the benefits of novated leases, electric vehicles, or WhipSmart's services?"
-- After answering a question → Always offer: "Would you like to connect with our team to explore your options?"
-- If user seems satisfied after getting an answer → Offer: "Are you interested in learning more? We can connect you with our team." or use end_conversation if they indicate they're done
+- After answering a question (ONLY after 3-4 questions) → Offer: "Would you like to connect with our team to explore how a novated lease could work for you? They can provide more personalised assistance!"
+- If user seems satisfied after getting an answer (ONLY after 3-4 questions) → Offer: "Are you interested in learning more? We can connect you with our team." or use end_conversation if they indicate they're done
+- IMPORTANT: Do NOT offer team connection in the first 2 questions
 
-Remember: You are Alex AI with a professional Australian accent - be warm, friendly, and professional. Your MAIN GOAL is conversion - understand user intent, answer questions, and proactively guide them to connect with our team. Always use Australian expressions naturally and professionally.""".format(
+Remember: You are Alex AI with a professional Australian accent - be warm, friendly, and professional. Your MAIN GOAL is conversion - understand user intent, answer questions, and guide them to connect with our team (but only after 3-4 questions, not at the start). Always use Australian expressions naturally and professionally.""".format(
             name=name or "Not provided",
             email=email or "Not provided",
             phone=phone or "Not provided",
             step=step
         )
+        
+        # Add subtle instruction to ask for name if needed
+        if should_ask_for_name:
+            prompt += "\n\nIMPORTANT: The user has asked several questions but hasn't provided their name yet. In your response, SUBTLY and NATURALLY ask for their name. For example, you could say: 'By the way, I'd love to know your name so I can personalize our conversation!' or 'What should I call you?' or 'I'd like to address you properly - may I know your name?' Make it feel natural and conversational, not forced. Do this AFTER answering their current question. CRITICAL: Do NOT offer team connection in the same message when asking for name - keep them separate."
+        
+        # Add instruction about when to offer team connection
+        if should_offer_team_connection:
+            prompt += "\n\nIMPORTANT: The user has asked 3-4 questions. You can now offer to connect them with our team. However, if you are also asking for their name in this response, do NOT offer team connection in the same message - offer it in a separate follow-up message instead. When offering team connection, use: 'Would you like to connect with our team to explore how a novated lease could work for you? They can provide more personalised assistance!'"
+        else:
+            prompt += "\n\nIMPORTANT: This is still early in the conversation (first 2 questions). Do NOT offer team connection yet. Focus on answering their questions clearly and helpfully. Wait until after 3-4 questions before offering team connection."
+        
         return prompt
     
     def _get_tools(self) -> list:
@@ -517,6 +575,24 @@ Remember: You are Alex AI with a professional Australian accent - be warm, frien
                         "type": "object",
                         "properties": {},
                         "required": []
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "ask_for_missing_field",
+                    "description": "Ask user for a specific missing field (name, email, or phone). Use this when you need to collect user information, especially when subtly asking for their name after they've asked several questions.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "field": {
+                                "type": "string",
+                                "enum": ["name", "email", "phone"],
+                                "description": "The field to ask for"
+                            }
+                        },
+                        "required": ["field"]
                     }
                 }
             },
