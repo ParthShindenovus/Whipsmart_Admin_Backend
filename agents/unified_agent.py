@@ -1,11 +1,12 @@
 """
 Unified Main Agent - Handles all conversation types with intelligent routing.
 Uses LLM function calling to route to appropriate handlers and tools.
+Enhanced with intelligent RAG fetching and two-step answer generation.
 """
 import logging
 import json
 import re
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 from django.utils import timezone
 from chats.models import Session
 from agents.graph import get_graph
@@ -64,6 +65,69 @@ class UnifiedAgent:
         self.session = session
         self.conversation_data = session.conversation_data or {}
     
+    def _classify_question(self, user_message: str, conversation_history: list) -> Tuple[bool, str]:
+        """
+        Fast classification to determine if question needs RAG context.
+        Returns: (needs_rag: bool, query: str)
+        
+        Domain questions (need RAG): Whipsmart, leasing, novated lease, tax, benefits, 
+        costs, eligibility, process, vehicles, EVs, etc.
+        
+        User-related questions (no RAG): connect with team, contact, speak with someone,
+        schedule, personal info collection, etc.
+        """
+        message_lower = user_message.lower()
+        
+        # User-related keywords that DON'T need RAG
+        user_action_keywords = [
+            'connect with team', 'connect me', 'speak with', 'talk to', 'contact',
+            'schedule', 'call me', 'reach out', 'get in touch', 'team contact',
+            'my name is', 'my email', 'my phone', 'i am', 'call me back',
+            'yes', 'no', 'sure', 'okay', 'ok', 'thanks', 'thank you',
+            'goodbye', 'bye', 'done', 'finished', 'that\'s all', 'no more questions'
+        ]
+        
+        # Check for user action keywords first (fast path)
+        for keyword in user_action_keywords:
+            if keyword in message_lower:
+                return False, ""
+        
+        # Domain keywords that ALWAYS need RAG
+        domain_keywords = [
+            'whipsmart', 'novated lease', 'novated leasing', 'salary sacrifice',
+            'tax', 'tax benefit', 'tax savings', 'gst', 'fbt', 'fringe benefit',
+            'lease', 'leasing', 'car lease', 'vehicle lease',
+            'benefit', 'benefits', 'advantage', 'advantages', 'pros', 'cons',
+            'cost', 'costs', 'price', 'pricing', 'fee', 'fees', 'charge', 'charges',
+            'eligibility', 'eligible', 'qualify', 'qualification', 'requirement', 'requirements',
+            'process', 'how to', 'how does', 'how do', 'what is', 'what are',
+            'vehicle', 'vehicles', 'car', 'cars', 'ev', 'electric vehicle', 'tesla',
+            'inclusion', 'inclusions', 'what\'s included', 'what is included',
+            'explain', 'tell me about', 'information about', 'details about',
+            'difference', 'compare', 'comparison', 'vs', 'versus',
+            'risk', 'risks', 'downside', 'disadvantage', 'problem', 'issues'
+        ]
+        
+        # Check for domain keywords
+        for keyword in domain_keywords:
+            if keyword in message_lower:
+                # Use the full user message as query, or extract relevant part
+                query = user_message.strip()
+                return True, query
+        
+        # If message is a follow-up question (short, likely related to previous context)
+        # Check conversation history for domain context
+        if len(user_message.split()) <= 5:  # Short message
+            # Check if previous messages had domain content
+            for msg in reversed(conversation_history[-3:]):  # Check last 3 messages
+                if msg.get('role') == 'user':
+                    prev_msg = msg.get('content', '').lower()
+                    if any(kw in prev_msg for kw in domain_keywords):
+                        return True, user_message.strip()
+        
+        # Default: if unclear, use RAG to be safe (better to have context than not)
+        return True, user_message.strip()
+    
     def handle_message(self, user_message: str) -> Dict:
         """Process user message using LLM with function calling tools."""
         client, model = _get_openai_client()
@@ -95,13 +159,30 @@ class UnifiedAgent:
         # Get conversation history from database
         conversation_history = self._get_conversation_history()
         
+        # STEP 1: Classify question and fetch RAG context if needed (OPTIMIZED: do this first)
+        needs_rag, rag_query = self._classify_question(user_message, conversation_history)
+        rag_context = []
+        knowledge_results = []
+        
+        if needs_rag and rag_query:
+            # Always fetch RAG context for domain questions
+            logger.info(f"[RAG] Fetching context for domain question: {rag_query}")
+            try:
+                rag_result = self._tool_search_knowledge_base({"query": rag_query})
+                if rag_result.get("success") and rag_result.get("results"):
+                    rag_context = rag_result.get("results", [])
+                    knowledge_results = rag_context
+                    logger.info(f"[RAG] Retrieved {len(rag_context)} context chunks")
+            except Exception as e:
+                logger.error(f"[RAG] Error fetching context: {str(e)}", exc_info=True)
+        
         # Check if we should subtly ask for name (after 3-4 questions without name)
         should_ask_for_name = self._should_ask_for_name(conversation_history, current_name)
         
         # Check if we should offer team connection (after 3-4 questions, but separately from name)
         should_offer_team_connection = self._should_offer_team_connection(conversation_history)
         
-        # Build system prompt
+        # Build system prompt (rag_context will be used in two-step process if needed)
         system_prompt = self._build_system_prompt(
             current_name, current_email, current_phone, step, 
             should_ask_for_name, should_offer_team_connection
@@ -116,6 +197,14 @@ class UnifiedAgent:
         messages.append({"role": "user", "content": user_message})
         
         try:
+            # For domain questions with RAG context, use two-step answer generation
+            if needs_rag and rag_context:
+                return self._handle_domain_question_with_rag(
+                    client, model, messages, tools, user_message, 
+                    rag_context, knowledge_results, conversation_history
+                )
+            
+            # For user-related questions (no RAG), use standard flow
             # Call LLM with function calling
             response = client.chat.completions.create(
                 model=model,
@@ -176,6 +265,8 @@ class UnifiedAgent:
                     # Extract assistant message content
                     if final_message.content:
                         assistant_message = final_message.content.strip()
+                        # Normalize newlines: replace multiple newlines with single newline (frontend converts \n to <br>)
+                        assistant_message = self._normalize_newlines(assistant_message)
                     elif final_message.tool_calls:
                         # If somehow tool calls are returned, log warning and use fallback
                         logger.warning("Final response has tool calls but no content, using fallback")
@@ -253,7 +344,9 @@ class UnifiedAgent:
                 }
             else:
                 # LLM responded directly without calling tools
-                assistant_message = message.content.strip()
+                assistant_message = message.content.strip() if message.content else "I'm here to help! How can I assist you today?"
+                # Normalize newlines: replace multiple newlines with single newline (frontend converts \n to <br>)
+                assistant_message = self._normalize_newlines(assistant_message)
                 needs_info = self._get_needs_info()
                 
                 # Generate suggestions based on context
@@ -338,7 +431,313 @@ class UnifiedAgent:
         # If history has 2-3 user messages, the current one is the 3rd or 4th
         return 2 <= user_message_count <= 3
     
-    def _build_system_prompt(self, name: str, email: str, phone: str, step: str, should_ask_for_name: bool = False, should_offer_team_connection: bool = False) -> str:
+    def _handle_domain_question_with_rag(
+        self, client, model, messages, tools, user_message, 
+        rag_context, knowledge_results, conversation_history
+    ) -> Dict:
+        """
+        Handle domain questions with RAG context using two-step answer generation:
+        1. Understand question and generate draft answer
+        2. Revalidate and improve the answer
+        3. Generate final thoughtful answer
+        Optimized for speed (5-6 seconds max).
+        """
+        try:
+            # Format RAG context for LLM
+            context_text = self._format_rag_context(rag_context)
+            
+            # STEP 1: Understand question and generate draft answer
+            understanding_prompt = f"""You are analyzing a user question about WhipSmart services.
+
+USER QUESTION: {user_message}
+
+RELEVANT CONTEXT FROM KNOWLEDGE BASE:
+{context_text}
+
+TASK: 
+1. First, clearly understand what the user is asking
+2. Identify the key points from the context that answer the question
+3. Generate a draft answer that addresses the question
+
+Provide your analysis in this format:
+UNDERSTANDING: [What is the user really asking?]
+KEY_POINTS: [List the main points from context that answer this]
+DRAFT_ANSWER: [Your initial draft answer]
+
+CRITICAL: USE POSITIVE, RESPECTFUL LANGUAGE
+- NEVER use negative or rude language (e.g., "if you can't afford", "if you don't have", "if you're unable to")
+- ALWAYS reframe negative statements into positive alternatives
+- Instead of "If you can't afford the residual payment, you may:" use "You also have options to:" or "Additional options include:"
+- Use supportive, helpful language that empowers users
+- Focus on solutions and options, not limitations or problems
+- Be respectful and professional at all times
+
+IMPORTANT: 
+- Use ONLY single \n for line breaks within content - frontend converts each \n to <br> tag
+- EXCEPTION: When concluding/leaving a list (transitioning from list items to regular text), use \n\n (double newline) for proper visual separation
+- If your draft answer includes nested lists, use exactly 4 spaces (not 3) for indentation per CommonMark specification
+Example: 
+1. **Main point**:
+    - Detail 1 (4 spaces before dash)
+    - Detail 2
+\n\n
+So, whether you're after a new car or a lease, we're here to help!"""
+
+            understanding_messages = [
+                {"role": "system", "content": "You are a helpful assistant that analyzes questions and generates answers."},
+                {"role": "user", "content": understanding_prompt}
+            ]
+            
+            logger.info("[TWO-STEP] Step 1: Understanding question and generating draft...")
+            understanding_response = client.chat.completions.create(
+                model=model,
+                messages=understanding_messages,
+                temperature=0.3,
+                max_tokens=800
+            )
+            
+            draft_analysis = understanding_response.choices[0].message.content.strip()
+            
+            # STEP 2: Revalidate and improve the answer
+            revalidation_prompt = f"""You are reviewing and improving an answer about WhipSmart services.
+
+ORIGINAL QUESTION: {user_message}
+
+DRAFT ANALYSIS:
+{draft_analysis}
+
+RELEVANT CONTEXT:
+{context_text}
+
+TASK:
+1. Review the draft answer - does it fully answer the user's question?
+2. Check if any important information from the context is missing
+3. Verify the answer is accurate and complete
+4. Improve the answer to be more thoughtful, clear, and helpful
+5. Ensure the answer directly addresses what the user asked
+6. CRITICAL: Check for and remove any negative, rude, or insensitive language - reframe into positive alternatives
+
+Provide your improved answer in this format:
+IS_COMPLETE: [Yes/No - does the draft fully answer the question?]
+MISSING_INFO: [Any important information that should be added]
+IMPROVED_ANSWER: [Your final, improved answer that is thoughtful and complete]
+
+CRITICAL: USE POSITIVE, RESPECTFUL LANGUAGE
+- NEVER use negative or rude language (e.g., "if you can't afford", "if you don't have", "if you're unable to")
+- ALWAYS reframe negative statements into positive alternatives
+- Instead of "If you can't afford the residual payment, you may:" use "You also have options to:" or "Additional options include:"
+- Use supportive, helpful language that empowers users
+- Focus on solutions and options, not limitations or problems
+- Be respectful and professional at all times
+
+IMPORTANT: 
+- Use ONLY single \n for line breaks within content - frontend converts each \n to <br> tag
+- EXCEPTION: When concluding/leaving a list (transitioning from list items to regular text), use \n\n (double newline) for proper visual separation
+- If your improved answer includes nested lists, use exactly 4 spaces (not 3) for indentation per CommonMark specification
+Example:
+1. **At the end of the lease**, you have options to:
+    - Return the vehicle.  (4 spaces before dash)
+    - Purchase the vehicle.
+\n\n
+So, whether you're after a new car or a lease, we're here to help!"""
+
+            revalidation_messages = [
+                {"role": "system", "content": "You are a quality assurance assistant that reviews and improves answers."},
+                {"role": "user", "content": revalidation_prompt}
+            ]
+            
+            logger.info("[TWO-STEP] Step 2: Revalidating and improving answer...")
+            revalidation_response = client.chat.completions.create(
+                model=model,
+                messages=revalidation_messages,
+                temperature=0.4,
+                max_tokens=1000
+            )
+            
+            improved_analysis = revalidation_response.choices[0].message.content.strip()
+            
+            # STEP 3: Extract final answer and format it properly
+            final_answer = self._extract_final_answer(improved_analysis, draft_analysis)
+            
+            # Build final messages with conversation context
+            final_messages = [
+                {
+                    "role": "system",
+                    "content": f"""You are Alex AI, WhipSmart's Unified Assistant with a warm, friendly, professional Australian accent.
+
+IMPORTANT: Use the following answer as the basis for your response. Format it naturally with Australian expressions, but keep it professional and helpful.
+
+ANSWER TO USE:
+{final_answer}
+
+Remember:
+- Use professional Australian expressions naturally (e.g., "no worries", "how are you going", "fair enough")
+- Keep the tone warm, friendly, and professional
+- CRITICAL: USE POSITIVE, RESPECTFUL LANGUAGE - NEVER use negative or rude language
+- Reframe negative statements into positive alternatives (e.g., "You also have options to:" instead of "If you can't afford, you may:")
+- Format with markdown: **bold** for emphasis, single line breaks (\n) for structure
+- CRITICAL: Use ONLY single \n for line breaks within content - frontend converts each \n to <br> tag
+- EXCEPTION: When concluding/leaving a list (transitioning from list items to regular text), use \n\n (double newline) for proper visual separation
+- CRITICAL: For nested lists, use exactly 4 spaces (not 3) for indentation per CommonMark specification
+  Example: 
+  1. **At the end of the lease**, you have options to:
+      - Return the vehicle.  (4 spaces before the dash)
+      - Purchase the vehicle.
+  \n\n
+  So, whether you're after a new car or a lease, we're here to help!
+- Keep it concise (2-4 sentences) but complete
+- If the user asked a specific question, make sure your answer directly addresses it"""
+                }
+            ]
+            # Add conversation history for context
+            final_messages.extend(conversation_history[-3:])  # Last 3 messages for context
+            final_messages.append({"role": "user", "content": user_message})
+            
+            logger.info("[TWO-STEP] Step 3: Generating final formatted answer...")
+            final_response = client.chat.completions.create(
+                model=model,
+                messages=final_messages,
+                temperature=0.7,
+                max_tokens=600
+            )
+            
+            assistant_message = final_response.choices[0].message.content.strip()
+            
+            # Normalize newlines: replace multiple newlines with single newline (frontend converts \n to <br>)
+            assistant_message = self._normalize_newlines(assistant_message)
+            
+            # Generate suggestions
+            needs_info = self._get_needs_info()
+            suggestions = self._generate_suggestions(assistant_message, user_message, "search_knowledge_base")
+            
+            logger.info("[TWO-STEP] Completed two-step answer generation")
+            
+            return {
+                'message': assistant_message,
+                'suggestions': suggestions,
+                'complete': False,
+                'needs_info': needs_info,
+                'escalate_to': None,
+                'knowledge_results': knowledge_results,
+                'metadata': {
+                    'knowledge_results': knowledge_results,
+                },
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in two-step answer generation: {str(e)}", exc_info=True)
+            # Fallback to simple answer
+            context_text = self._format_rag_context(rag_context)
+            fallback_prompt = f"""Based on the following context, answer the user's question: {user_message}
+
+Context:
+{context_text}
+
+Provide a clear, helpful answer with a professional Australian accent.
+
+CRITICAL: USE POSITIVE, RESPECTFUL LANGUAGE
+- NEVER use negative or rude language (e.g., "if you can't afford", "if you don't have", "if you're unable to")
+- ALWAYS reframe negative statements into positive alternatives
+- Instead of "If you can't afford the residual payment, you may:" use "You also have options to:" or "Additional options include:"
+- Use supportive, helpful language that empowers users
+- Focus on solutions and options, not limitations or problems
+- Be respectful and professional at all times
+
+IMPORTANT: 
+- Use ONLY single \n for line breaks within content - frontend converts each \n to <br> tag
+- EXCEPTION: When concluding/leaving a list (transitioning from list items to regular text), use \n\n (double newline) for proper visual separation
+- If you use nested lists in markdown, use exactly 4 spaces (not 3) for indentation per CommonMark specification
+Example:
+1. **Main item**:
+    - Nested item (4 spaces before dash)
+    - Another nested item
+\n\n
+So, whether you're after a new car or a lease, we're here to help!"""
+            
+            fallback_messages = [
+                {"role": "system", "content": "You are Alex AI, WhipSmart's assistant with a professional Australian accent."},
+                {"role": "user", "content": fallback_prompt}
+            ]
+            
+            fallback_response = client.chat.completions.create(
+                model=model,
+                messages=fallback_messages,
+                temperature=0.7,
+                max_tokens=500
+            )
+            
+            assistant_message = fallback_response.choices[0].message.content.strip()
+            # Normalize newlines: replace multiple newlines with single newline (frontend converts \n to <br>)
+            assistant_message = self._normalize_newlines(assistant_message)
+            needs_info = self._get_needs_info()
+            suggestions = self._generate_suggestions(assistant_message, user_message, "search_knowledge_base")
+            
+            return {
+                'message': assistant_message,
+                'suggestions': suggestions,
+                'complete': False,
+                'needs_info': needs_info,
+                'escalate_to': None,
+                'knowledge_results': knowledge_results,
+                'metadata': {
+                    'knowledge_results': knowledge_results,
+                },
+            }
+    
+    def _format_rag_context(self, rag_context: list) -> str:
+        """Format RAG context chunks for LLM consumption."""
+        if not rag_context:
+            return "No relevant context found."
+        
+        formatted = []
+        for i, chunk in enumerate(rag_context[:4], 1):  # Top 4 chunks
+            text = chunk.get('text', '')
+            source = chunk.get('reference_url') or chunk.get('url') or chunk.get('document_title', '')
+            score = chunk.get('score', 0.0)
+            
+            chunk_text = f"[Context {i}] (Relevance: {score:.2f})\n{text}"
+            if source:
+                chunk_text += f"\nSource: {source}"
+            formatted.append(chunk_text)
+        
+        return "\n\n".join(formatted)
+    
+    def _normalize_newlines(self, text: str) -> str:
+        """
+        Normalize newlines: preserve \n\n (allowed when concluding/leaving a list),
+        but normalize excessive newlines (3+ consecutive) to \n\n.
+        Frontend converts each \n to <br> tag, so \n\n creates proper spacing when leaving lists.
+        """
+        import re
+        # Normalize excessive newlines (3+ consecutive) to \n\n
+        # This preserves intentional \n\n while removing unwanted \n\n\n+
+        return re.sub(r'\n{3,}', '\n\n', text)
+    
+    def _extract_final_answer(self, improved_analysis: str, draft_analysis: str) -> str:
+        """Extract the final answer from the improved analysis."""
+        # Try to extract from IMPROVED_ANSWER section
+        if "IMPROVED_ANSWER:" in improved_analysis:
+            parts = improved_analysis.split("IMPROVED_ANSWER:", 1)
+            if len(parts) > 1:
+                answer = parts[1].strip()
+                # Remove any trailing sections
+                if "\n" in answer:
+                    answer = answer.split("\n")[0]
+                return answer
+        
+        # Fallback: try DRAFT_ANSWER
+        if "DRAFT_ANSWER:" in draft_analysis:
+            parts = draft_analysis.split("DRAFT_ANSWER:", 1)
+            if len(parts) > 1:
+                answer = parts[1].strip()
+                if "\n" in answer:
+                    answer = answer.split("\n")[0]
+                return answer
+        
+        # Last resort: use improved analysis as-is (first paragraph)
+        return improved_analysis.split("\n\n")[0] if "\n\n" in improved_analysis else improved_analysis[:500]
+    
+    def _build_system_prompt(self, name: str, email: str, phone: str, step: str, should_ask_for_name: bool = False, should_offer_team_connection: bool = False, rag_context: Optional[list] = None) -> str:
         """Build system prompt based on current state."""
         prompt = """You are Alex AI, WhipSmart's Unified Assistant with a warm, friendly, professional Australian accent. Your PRIMARY GOAL is to help users understand WhipSmart's services AND convert them to connect with our team.
 
@@ -423,9 +822,27 @@ RESPONSE GUIDELINES:
 - If user seems done or satisfied, offer to help with anything else or end conversation
 - ALWAYS use professional Australian accent and expressions naturally throughout all responses
 - Use warm, friendly, professional Australian tone (e.g., "How are you going?", "No worries!", "Fair enough!", "Too easy!", "Cheers!")
-- Use markdown formatting for better readability: **bold** for emphasis, line breaks (\n) for structure
+- CRITICAL: USE POSITIVE, RESPECTFUL LANGUAGE - NEVER use negative or rude language
+- NEVER say things like "if you can't afford", "if you don't have", "if you're unable to" - these are rude and insensitive
+- ALWAYS reframe negative statements into positive alternatives (e.g., "You also have options to:" instead of "If you can't afford, you may:")
+- Use supportive, helpful language that empowers users - focus on solutions and options, not limitations
+- Use markdown formatting for better readability: **bold** for emphasis, single line breaks (\n) for structure
 - Format important information with **bold** text to make it stand out
-- Use line breaks to separate different sections of your response for better visual hierarchy
+- CRITICAL: Use ONLY single \n for line breaks within content - frontend converts each \n to <br> tag
+- EXCEPTION: When concluding/leaving a list (transitioning from list items to regular text), use \n\n (double newline) for proper visual separation
+  Example:
+  - List item 1
+  - List item 2
+  \n\n
+  So, whether you're after a new car or a lease, we're here to help!
+- Use single line breaks to separate different sections of your response for better visual hierarchy
+- CRITICAL: For nested lists in markdown, ALWAYS use exactly 4 spaces (not 3) for indentation per CommonMark specification
+  Example of correct nested list formatting:
+  1. **At the end of the lease**, you have options to:
+      - Return the vehicle.  (4 spaces before the dash)
+      - Purchase the vehicle.
+      - Extend the lease.
+  This ensures proper rendering in ReactMarkdown with remarkGfm
 
 TOOLS AVAILABLE:
 - search_knowledge_base: Search WhipSmart knowledge base for answers

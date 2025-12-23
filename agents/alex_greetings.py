@@ -3,6 +3,7 @@ Alex AI - Smart Greeting Rules
 Generates time and day-based greetings with Australian accent.
 Uses Melbourne timezone (Australia/Melbourne) for accurate time-based greetings.
 """
+import re
 import random
 from django.utils import timezone  # type: ignore
 try:
@@ -85,6 +86,14 @@ def _get_casual_greeting() -> str:
     return "Hello!"
 
 
+def _normalize_newlines(text: str) -> str:
+    """
+    Replace multiple consecutive newline characters with a single newline.
+    Frontend converts each \n to <br> tag, so multiple newlines create unwanted spacing.
+    """
+    return re.sub(r'\n\s*\n', '\n', text)
+
+
 def get_full_alex_greeting() -> str:
     """
     Get a full Alex AI greeting with introduction.
@@ -114,8 +123,7 @@ def get_full_alex_greeting() -> str:
         else:
             message_lines.append("**Good evening!**")
     
-    # Add multiple blank lines for better visual separation
-    message_lines.append("")
+    # Add single line break for visual separation
     message_lines.append("")
     
     # Add introduction with bold for name and company
@@ -125,14 +133,15 @@ def get_full_alex_greeting() -> str:
     intro2 = "I'm here to help you with everything related to electric vehicle leasing and novated leases."
     message_lines.append(intro2)
     
-    # Add multiple blank lines for better visual separation
-    message_lines.append("")
+    # Add single line break for visual separation
     message_lines.append("")
     
     # Add call to action with emphasis
     cta = "**What can I help you with today?**"
     message_lines.append(cta)
     
-    # Join with line breaks for proper formatting
-    return "\n".join(message_lines)
+    # Join with line breaks for proper formatting (single \n only)
+    greeting = "\n".join(message_lines)
+    # Normalize to ensure only single newlines (frontend converts \n to <br>)
+    return _normalize_newlines(greeting)
 
