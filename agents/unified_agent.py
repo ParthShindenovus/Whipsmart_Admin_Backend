@@ -77,6 +77,28 @@ class UnifiedAgent:
         schedule, personal info collection, etc.
         """
         message_lower = user_message.lower()
+        message_stripped = user_message.strip()
+        
+        # CRITICAL: Check if user is providing contact information (email/phone) - NO RAG needed
+        # Pattern: email address (contains @) or phone number (contains digits)
+        import re
+        # Check for email pattern
+        email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+        # Check for phone pattern (at least 8 digits, possibly with spaces/dashes/parentheses)
+        phone_pattern = r'[\d\s\-\(\)]{8,}'
+        
+        has_email = bool(re.search(email_pattern, message_stripped))
+        # Count digits to detect phone numbers
+        digit_count = len(re.findall(r'\d', message_stripped))
+        has_phone = digit_count >= 8  # At least 8 digits suggests a phone number
+        
+        # If message contains email or phone, it's likely user providing contact info - NO RAG
+        if has_email or has_phone:
+            # But check if it's part of a question (e.g., "what is info@whipsmart.com?")
+            question_words = ['what', 'where', 'when', 'why', 'how', 'who', 'which', '?']
+            is_question = any(word in message_lower for word in question_words)
+            if not is_question:
+                return False, ""
         
         # User-related keywords that DON'T need RAG
         user_action_keywords = [
@@ -112,7 +134,7 @@ class UnifiedAgent:
         for keyword in domain_keywords:
             if keyword in message_lower:
                 # Use the full user message as query, or extract relevant part
-                query = user_message.strip()
+                query = message_stripped
                 return True, query
         
         # If message is a follow-up question (short, likely related to previous context)
@@ -123,10 +145,24 @@ class UnifiedAgent:
                 if msg.get('role') == 'user':
                     prev_msg = msg.get('content', '').lower()
                     if any(kw in prev_msg for kw in domain_keywords):
-                        return True, user_message.strip()
+                        return True, message_stripped
+        
+        # Check conversation history: if last assistant message asked for contact info, this is likely info submission
+        if conversation_history:
+            last_assistant_msg = None
+            for msg in reversed(conversation_history[-3:]):
+                if msg.get('role') == 'assistant':
+                    last_assistant_msg = msg.get('content', '').lower()
+                    break
+            
+            if last_assistant_msg:
+                info_request_keywords = ['email', 'phone', 'contact', 'details', 'information', 'share']
+                if any(kw in last_assistant_msg for kw in info_request_keywords):
+                    # Last message asked for info, current message likely provides it - NO RAG
+                    return False, ""
         
         # Default: if unclear, use RAG to be safe (better to have context than not)
-        return True, user_message.strip()
+        return True, message_stripped
     
     def handle_message(self, user_message: str) -> Dict:
         """Process user message using LLM with function calling tools."""
@@ -804,11 +840,18 @@ WHEN TO OFFER TEAM CONNECTION:
 
 WHEN TO COLLECT USER INFORMATION:
 - User says "yes" to connecting with team
+- User provides contact information (email, phone, name) in their message
 - User wants to schedule a call
 - User shows interest in WhipSmart services
 - User asks about pricing, plans, onboarding, consultation
 - You cannot fully assist and need human help
 - User explicitly asks to speak with someone
+
+CRITICAL: When user provides contact details:
+- ALWAYS use collect_user_info tool to extract and store the information
+- Acknowledge and thank them for providing their details
+- Ask if they need any other help or if they're done
+- Do NOT search knowledge base or provide generic contact information when user is submitting their details
 
 RESPONSE GUIDELINES:
 - Keep responses CONCISE (2-4 sentences maximum)
@@ -863,6 +906,8 @@ UNDERSTANDING USER PROMPTS:
 
 EXAMPLES:
 - If you asked "Would you like to connect with our team?" and user says "yes" → Use collect_user_info tool or ask_for_missing_field
+- If you asked "Could you please share your email address and phone number?" and user provides "pat@yopmail.com 61433290182" → IMMEDIATELY use collect_user_info tool to extract email and phone - do NOT search knowledge base
+- If user provides contact information (email, phone, name) → ALWAYS use collect_user_info tool first - this is NOT a question, it's information submission
 - If you asked "Would you like further details?" and user says "yes" → Use search_knowledge_base with the topic from previous conversation
 - If user says "yes" without clear context → Look at last assistant message to understand what they're agreeing to
 - If user says "I'm done", "no more questions", "thank you, goodbye", "that's all" → Use end_conversation tool
@@ -871,6 +916,7 @@ EXAMPLES:
 - After answering a question (ONLY after 3-4 questions) → Offer: "Would you like to connect with our team to explore how a novated lease could work for you? They can provide more personalised assistance!"
 - If user seems satisfied after getting an answer (ONLY after 3-4 questions) → Offer: "Are you interested in learning more? We can connect you with our team." or use end_conversation if they indicate they're done
 - IMPORTANT: Do NOT offer team connection in the first 2 questions
+- CRITICAL: When user provides contact details (email/phone), acknowledge and thank them, then ask if they need other help or if they're done
 
 Remember: You are Alex AI with a professional Australian accent - be warm, friendly, and professional. Your MAIN GOAL is conversion - understand user intent, answer questions, and guide them to connect with our team (but only after 3-4 questions, not at the start). Always use Australian expressions naturally and professionally.""".format(
             name=name or "Not provided",
@@ -940,7 +986,7 @@ Remember: You are Alex AI with a professional Australian accent - be warm, frien
                 "type": "function",
                 "function": {
                     "name": "collect_user_info",
-                    "description": "Extract name, email, or phone from user message and store it. Use when user provides their information OR when user says 'yes' to connecting with team. IMPORTANT: If user said 'yes' to connecting with team, use this tool to extract any info they provided, or use ask_for_missing_field if they didn't provide info yet.",
+                    "description": "Extract name, email, or phone from user message and store it. CRITICAL: ALWAYS use this tool when user provides contact information (email address, phone number, or name) in their message. Use when: 1) User provides email/phone/name (e.g., 'pat@yopmail.com 61433290182'), 2) User says 'yes' to connecting with team, 3) User responds to a request for their contact details. IMPORTANT: If user provides email/phone in their message, you MUST call this tool to extract and store the information - do NOT search knowledge base or provide generic contact information.",
                     "parameters": {
                         "type": "object",
                         "properties": {
