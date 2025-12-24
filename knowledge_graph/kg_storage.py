@@ -410,4 +410,43 @@ class KGStorage:
         except Exception as e:
             logger.error(f"Error deleting document graph: {str(e)}", exc_info=True)
             return {"nodes_deleted": 0, "edges_deleted": 0}
+    
+    def clear_all_graphs(self) -> Dict[str, int]:
+        """
+        Delete ALL nodes and edges from the knowledge graph.
+        WARNING: This will delete all data in the knowledge graph!
+        
+        Returns:
+            Dictionary with 'nodes_deleted' and 'edges_deleted' counts
+        """
+        if self.use_neo4j:
+            return self.storage.clear_all_graphs()
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Get counts before deletion
+            cursor.execute("SELECT COUNT(*) FROM kg_nodes")
+            nodes_count = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(*) FROM kg_edges")
+            edges_count = cursor.fetchone()[0]
+            
+            # Delete all edges first (to avoid foreign key constraint violations)
+            cursor.execute("DELETE FROM kg_edges")
+            
+            # Delete all nodes
+            cursor.execute("DELETE FROM kg_nodes")
+            
+            conn.commit()
+            conn.close()
+            
+            logger.info(f"Cleared all graphs: {nodes_count} nodes and {edges_count} edges deleted")
+            return {
+                "nodes_deleted": nodes_count,
+                "edges_deleted": edges_count
+            }
+        except Exception as e:
+            logger.error(f"Error clearing all graphs: {str(e)}", exc_info=True)
+            return {"nodes_deleted": 0, "edges_deleted": 0}
 

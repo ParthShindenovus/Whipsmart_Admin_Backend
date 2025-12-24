@@ -95,13 +95,29 @@ def build_kg_for_document(document_id: str) -> Dict[str, int]:
             return {"nodes_created": 0, "edges_created": 0}
         
         # Get document text
-        # PRIMARY: Use structured_text_qa_url (Q&A format) - preferred for KG extraction
-        # FALLBACK: Extract from original file if structured text not available
+        # PRIMARY: Use original source file (PDF, DOCX, TXT, HTML) - preferred for KG extraction
+        # FALLBACK: Use structured_text_qa_url if original file not available
         text = None
         text_source = None
         
-        # Try structured_text_qa_url first (preferred method)
-        if document.structured_text_qa_url:
+        # Try original file first (preferred method)
+        if document.file_url:
+            try:
+                file_path = get_file_path_from_url(document.file_url)
+                if file_path.exists():
+                    text = extract_text_from_file(file_path, document.file_type)
+                    if text:
+                        text_source = "original_file"
+                        logger.info(f"Using original file for document {document_id} - {len(text)} characters from {file_path}")
+                    else:
+                        logger.warning(f"No text extracted from original file for document {document_id}, will try structured Q&A file")
+                else:
+                    logger.warning(f"Original file not found for document {document_id}: {file_path}, will try structured Q&A file")
+            except Exception as e:
+                logger.warning(f"Could not extract text from original file for document {document_id}: {str(e)}, will try structured Q&A file", exc_info=True)
+        
+        # Fallback to structured_text_qa_url if original file not available or failed
+        if not text and document.structured_text_qa_url:
             try:
                 file_path = get_file_path_from_url(document.structured_text_qa_url)
                 
@@ -130,39 +146,20 @@ def build_kg_for_document(document_id: str) -> Dict[str, int]:
                         text = f.read().strip()
                     if text:
                         text_source = "structured_text_qa_url"
-                        logger.info(f"Using structured_text_qa_url (Q&A format) for document {document_id} - {len(text)} characters from {file_path}")
+                        logger.info(f"Using structured_text_qa_url (fallback) for document {document_id} - {len(text)} characters from {file_path}")
                     else:
                         logger.warning(f"structured_text_qa_url file exists but is empty for document {document_id}")
                 else:
                     logger.warning(f"structured_text_qa_url file not found at {file_path} (or alternatives) for document {document_id}")
             except Exception as e:
-                logger.warning(f"Could not load structured_text_qa_url for document {document_id}: {str(e)}, will try original file", exc_info=True)
+                logger.warning(f"Could not load structured_text_qa_url for document {document_id}: {str(e)}", exc_info=True)
         
-        # Fallback to original file if structured text not available or empty
-        if not text:
-            try:
-                file_path = get_file_path_from_url(document.file_url)
-                if file_path.exists():
-                    text = extract_text_from_file(file_path, document.file_type)
-                    if text:
-                        text_source = "original_file"
-                        logger.info(f"Using original file for document {document_id} - {len(text)} characters")
-                    else:
-                        logger.error(f"No text extracted from original file for document {document_id}")
-                        return {"nodes_created": 0, "edges_created": 0}
-                else:
-                    logger.error(f"Original file not found for document {document_id}: {file_path}")
-                    return {"nodes_created": 0, "edges_created": 0}
-            except Exception as e:
-                logger.error(f"Error extracting text from document {document_id}: {str(e)}", exc_info=True)
-                return {"nodes_created": 0, "edges_created": 0}
-        
+        # If still no text, return error
         if not text or not text.strip():
-            logger.warning(f"No text content found for document {document_id} (source: {text_source})")
+            logger.error(f"No text content found for document {document_id} (tried original file and structured Q&A file)")
             return {"nodes_created": 0, "edges_created": 0}
         
         # Split text into sections for processing
-        # Note: Using structured_text_qa_url provides better structured content for KG extraction
         sections = split_text_by_sections(text)
         logger.info(f"Split document {document_id} ({text_source}) into {len(sections)} sections for KG extraction")
         

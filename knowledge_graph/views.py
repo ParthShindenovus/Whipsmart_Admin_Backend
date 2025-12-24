@@ -80,16 +80,11 @@ class BuildKGView(StandardizedResponseMixin, views.APIView):
                     status_code=status.HTTP_404_NOT_FOUND
                 )
             
-            # Check if structured_text_qa_url is available (preferred for KG extraction)
-            if not document.structured_text_qa_url:
-                logger.info(f"Document {document_id} does not have structured_text_qa_url, will use original file")
-            
             # Build KG (wrapped in try/catch for failure isolation)
+            # Note: KG is built from original source file, not from structured Q&A text
             try:
                 result = build_kg_for_document(str(document_id))
-                message = 'Knowledge Graph built successfully'
-                if document.structured_text_qa_url:
-                    message += ' (using structured Q&A format)'
+                message = 'Knowledge Graph built successfully from original source file'
                 return success_response(
                     data=result,
                     message=message
@@ -118,45 +113,72 @@ class QueryKGView(StandardizedResponseMixin, views.APIView):
     
     @extend_schema(
         summary="Query Knowledge Graph",
-        description="Query entities, relationships, or facts from the Knowledge Graph.",
+        description="Query entities, relationships, or facts from the Knowledge Graph. Supported query types: 1) type=entity&name=X - Search entities by name, 2) type=relationships&entity_id=X - Get relationships for an entity, 3) type=facts&node_type=X or rel_type=Y - Get facts by type, 4) type=document&document_id=X - Get graph for a document.",
         tags=['Knowledge Graph']
     )
     def get(self, request):
         """Query KG by entity name, type, or document."""
         try:
-            query_type = request.query_params.get('type', 'entity')
+            query_type = request.query_params.get('type', '').lower()
             name = request.query_params.get('name')
             entity_id = request.query_params.get('entity_id')
             node_type = request.query_params.get('node_type')
             rel_type = request.query_params.get('rel_type')
             document_id = request.query_params.get('document_id')
             
-            if query_type == 'entity' and name:
+            # Handle entity queries
+            if query_type == 'entity':
+                if not name:
+                    return error_response(
+                        'Missing required parameter: name. Use type=entity&name=<entity_name>',
+                        status_code=status.HTTP_400_BAD_REQUEST
+                    )
                 results = get_entity(name)
                 return success_response(data={'entities': results})
             
-            elif query_type == 'relationships' and entity_id:
+            # Handle relationship queries
+            elif query_type == 'relationships':
+                if not entity_id:
+                    return error_response(
+                        'Missing required parameter: entity_id. Use type=relationships&entity_id=<entity_id>',
+                        status_code=status.HTTP_400_BAD_REQUEST
+                    )
                 results = get_relationships(entity_id)
                 return success_response(data={'relationships': results})
             
+            # Handle facts queries
             elif query_type == 'facts':
+                if not node_type and not rel_type:
+                    return error_response(
+                        'Missing required parameter: node_type or rel_type. Use type=facts&node_type=<type> or type=facts&rel_type=<type>',
+                        status_code=status.HTTP_400_BAD_REQUEST
+                    )
                 results = get_facts_by_type(node_type, rel_type)
                 return success_response(data={'facts': results})
             
-            elif query_type == 'document' and document_id:
+            # Handle document queries
+            elif query_type == 'document':
+                if not document_id:
+                    return error_response(
+                        'Missing required parameter: document_id. Use type=document&document_id=<uuid>',
+                        status_code=status.HTTP_400_BAD_REQUEST
+                    )
                 results = get_document_graph(document_id)
                 return success_response(data=results)
             
+            # No query type provided or invalid query type
             else:
                 return error_response(
-                    'Invalid query parameters. Use type=entity&name=X, type=relationships&entity_id=X, type=facts&node_type=X, or type=document&document_id=X',
+                    'Invalid or missing query type. Supported types: entity, relationships, facts, document. '
+                    'Examples: ?type=entity&name=ResidualValue, ?type=relationships&entity_id=entity-123, '
+                    '?type=facts&node_type=Regulation, ?type=document&document_id=doc-uuid',
                     status_code=status.HTTP_400_BAD_REQUEST
                 )
                 
         except Exception as e:
             logger.error(f"Error in QueryKGView: {str(e)}", exc_info=True)
             return error_response(
-                'An error occurred while querying the Knowledge Graph',
+                f'An error occurred while querying the Knowledge Graph: {str(e)}',
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
@@ -251,3 +273,67 @@ class DeleteKGView(StandardizedResponseMixin, views.APIView):
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
+
+class ClearAllKGView(StandardizedResponseMixin, views.APIView):
+    """
+    Clear ALL Knowledge Graphs from Neo4j/SQLite.
+    WARNING: This will delete all knowledge graph data!
+    """
+    permission_classes = [IsAuthenticated]
+    
+    @extend_schema(
+        summary="Clear All Knowledge Graphs",
+        description="Delete ALL nodes and edges from the Knowledge Graph database. WARNING: This operation cannot be undone! Requires superuser permissions.",
+        responses={
+            200: {
+                'description': 'Clear operation summary',
+                'type': 'object',
+                'properties': {
+                    'nodes_deleted': {'type': 'integer'},
+                    'edges_deleted': {'type': 'integer'}
+                }
+            },
+            403: {
+                'description': 'Forbidden - requires superuser permissions'
+            }
+        },
+        tags=['Knowledge Graph']
+    )
+    def delete(self, request):
+        """Clear all graphs from the knowledge graph database."""
+        try:
+            # Only allow superusers to clear all graphs
+            if not request.user.is_superuser:
+                return error_response(
+                    'Only superusers can clear all knowledge graphs',
+                    status_code=status.HTTP_403_FORBIDDEN
+                )
+            
+            # Clear all graphs
+            try:
+                storage = KGStorage()
+                result = storage.clear_all_graphs()
+                
+                if result["nodes_deleted"] == 0 and result["edges_deleted"] == 0:
+                    return success_response(
+                        data=result,
+                        message='Knowledge Graph database is already empty'
+                    )
+                
+                return success_response(
+                    data=result,
+                    message=f'All Knowledge Graphs cleared successfully ({result["nodes_deleted"]} nodes, {result["edges_deleted"]} edges deleted)'
+                )
+            except Exception as e:
+                logger.error(f"Error clearing all graphs: {str(e)}", exc_info=True)
+                return error_response(
+                    'An error occurred while clearing all Knowledge Graphs',
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+                
+        except Exception as e:
+            logger.error(f"Error in ClearAllKGView: {str(e)}", exc_info=True)
+            return error_response(
+                'An error occurred while clearing all Knowledge Graphs',
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )

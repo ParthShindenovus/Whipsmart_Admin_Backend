@@ -401,3 +401,46 @@ class KGStorageNeo4j:
         except Exception as e:
             logger.error(f"Error deleting document graph: {str(e)}", exc_info=True)
             return {"nodes_deleted": 0, "edges_deleted": 0}
+    
+    def clear_all_graphs(self) -> Dict[str, int]:
+        """
+        Delete ALL nodes and edges from the knowledge graph.
+        WARNING: This will delete all data in the knowledge graph!
+        
+        Returns:
+            Dictionary with 'nodes_deleted' and 'edges_deleted' counts
+        """
+        try:
+            # First, get counts before deletion
+            nodes_records, summary, keys = self.driver.execute_query("""
+                MATCH (n:KGNode)
+                RETURN count(n) as node_count
+            """, database_=self.database)
+            nodes_count = nodes_records[0].data()['node_count'] if nodes_records else 0
+            
+            edges_records, summary, keys = self.driver.execute_query("""
+                MATCH ()-[r:RELATES_TO]->()
+                RETURN count(r) as edge_count
+            """, database_=self.database)
+            edges_count = edges_records[0].data()['edge_count'] if edges_records else 0
+            
+            # Delete all relationships first (to avoid constraint violations)
+            self.driver.execute_query("""
+                MATCH ()-[r:RELATES_TO]->()
+                DELETE r
+            """, database_=self.database)
+            
+            # Delete all nodes
+            self.driver.execute_query("""
+                MATCH (n:KGNode)
+                DELETE n
+            """, database_=self.database)
+            
+            logger.info(f"Cleared all graphs: {nodes_count} nodes and {edges_count} edges deleted")
+            return {
+                "nodes_deleted": nodes_count,
+                "edges_deleted": edges_count
+            }
+        except Exception as e:
+            logger.error(f"Error clearing all graphs: {str(e)}", exc_info=True)
+            return {"nodes_deleted": 0, "edges_deleted": 0}
