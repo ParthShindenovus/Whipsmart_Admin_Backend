@@ -1399,7 +1399,7 @@ CRITICAL ACTION ITEMS (MUST FOLLOW - CHECK FLAGS ABOVE):
         
         # Add instruction to ask for name if needed
         if should_ask_for_name:
-            logger.info(f"[NAME COLLECTION] Flag set to True - instructing LLM to ask for name. Current name: {current_name}")
+            logger.info(f"[NAME COLLECTION] Flag set to True - instructing LLM to ask for name. Current name: {name}")
             prompt += "\n\n🚨 CRITICAL INSTRUCTION - NAME COLLECTION (MANDATORY): 🚨\nThe user has asked 2-3 questions but hasn't provided their name yet. You MUST ask for their name in your response.\n\nOPTIONS:\n1. Use the ask_for_missing_field tool with field='name' (RECOMMENDED)\n2. OR naturally ask in your response after answering their question\n\nExamples of natural asking:\n- 'By the way, I'd love to know your name so I can personalize our conversation! What should I call you?'\n- 'I'd like to address you properly - may I know your name?'\n- 'What should I call you?'\n\nIMPORTANT: Do this AFTER answering their current question. Make it feel natural and conversational.\nCRITICAL: Do NOT offer team connection in the same message when asking for name - keep them separate."
         
         # Add instruction about when to offer team connection

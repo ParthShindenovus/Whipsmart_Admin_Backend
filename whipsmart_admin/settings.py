@@ -55,6 +55,7 @@ INSTALLED_APPS = [
     'knowledgebase',
     'chats',
     'widget',
+    'knowledge_graph',
 ]
 
 MIDDLEWARE = [
@@ -337,6 +338,12 @@ AZURE_OPENAI_EMBEDDING_DEPLOYMENT = config('AZURE_OPENAI_EMBEDDING_DEPLOYMENT', 
 
 # OpenAI settings (for embeddings if not using Azure)
 OPENAI_API_KEY = config('OPENAI_API_KEY', default='')
+
+# Neo4j settings for Knowledge Graph
+NEO4J_URI = config('NEO4J_URI', default='bolt://localhost:7687')
+NEO4J_USER = config('NEO4J_USER', default='neo4j')
+NEO4J_PASSWORD = config('NEO4J_PASSWORD', default='')
+USE_NEO4J = config('USE_NEO4J', default=False, cast=bool)  # Enable Neo4j instead of SQLite for Knowledge Graph
 
 # Cloud Storage Configuration (for future use)
 # Currently using local media folder, but ready for cloud storage

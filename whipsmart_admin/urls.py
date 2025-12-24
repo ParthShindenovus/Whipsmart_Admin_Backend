@@ -43,6 +43,7 @@ urlpatterns = [
     path('api/', include('core.urls')),  # /api/users/
     path('api/chats/', include('chats.urls')),  # /api/chats/sessions/, /api/chats/messages/
     path('api/knowledgebase/', include('knowledgebase.urls')),  # /api/knowledgebase/documents/
+    path('api/knowledge-graph/', include('knowledge_graph.urls')),  # /api/knowledge-graph/build/, /api/knowledge-graph/query/
     path('api/v1/widget/', include('widget.urls')),  # /api/v1/widget/api-keys/, /api/v1/widget/config/
 ]
 

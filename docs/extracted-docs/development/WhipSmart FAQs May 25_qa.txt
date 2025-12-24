@@ -1,0 +1,510 @@
+===Q&A-001===
+Q: What is WhipSmart?  
+A: WhipSmart is an Australian novated lease provider specializing in electric vehicles (EVs). They offer tax-efficient and streamlined vehicle financing solutions for employees.  
+METADATA:  
+- page: 1  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: FAQ Everything you need to know  
+- section: Introduction  
+- description: Overview of WhipSmart as a company and its specialization in novated leasing for electric vehicles.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-002===
+Q: What is a novated lease?  
+A: A novated lease is a three-way agreement between an employee, their employer, and a finance company. Under this arrangement, the employer makes lease payments on behalf of the employee, which are deducted from the employee’s pre-tax salary. This setup can lead to significant tax savings and simplifies vehicle ownership by bundling costs like maintenance, insurance, and registration into a single monthly payment.  
+METADATA:  
+- page: 1  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: FAQ Everything you need to know  
+- section: What Is a Novated Lease?  
+- description: Explanation of a novated lease, its structure, and benefits.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-003===
+Q: What are the key benefits of a novated lease with WhipSmart?  
+A: The key benefits of a novated lease with WhipSmart include:  
+- **Tax Savings**: Lease payments are made using pre-tax income, reducing taxable income and offering potential tax benefits.  
+- **All-Inclusive Payments**: Vehicle-related expenses such as fuel, servicing, insurance, and registration are consolidated into one regular payment, simplifying budgeting.  
+- **EV Specialization**: WhipSmart focuses on electric vehicles, offering a range of models and expertise in EV leasing.  
+- **Flexible Vehicle Options**: Employees can lease new, used, or even their existing vehicles through WhipSmart's programs.  
+- **End-of-Lease Choices**: Options at the end of the lease include trading in for a new vehicle, refinancing the residual value, or purchasing the car outright.  
+METADATA:  
+- page: 1  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: FAQ Everything you need to know  
+- section: Key Benefits with WhipSmart  
+- description: Detailed benefits of choosing WhipSmart for novated leasing, including tax savings and flexibility.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-004===
+Q: What EV incentives and promotions does WhipSmart offer?  
+A: WhipSmart offers the following EV incentives and promotions:  
+- **Tesla Discount**: A $3,000 discount on new Tesla Model 3 and Model Y vehicles when financed through a novated lease. This offer is valid until December 31, 2024.  
+- **Sell and Lease Back Program**: EV owners can sell their vehicle to WhipSmart and lease it back, unlocking immediate cash while benefiting from the tax savings associated with novated leasing.  
+METADATA:  
+- page: 1  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: FAQ Everything you need to know  
+- section: EV Incentives & Promotions  
+- description: Information on discounts and programs offered by WhipSmart for electric vehicle owners and lessees.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-005===
+Q: How does the novated leasing process work with WhipSmart?  
+A: The novated leasing process with WhipSmart involves the following steps:  
+1. **Vehicle Selection**: Choose a new, used, or existing vehicle to lease.  
+2. **Lease Application**: Submit an application online through WhipSmart's platform.  
+3. **Agreement Execution**: Sign a novated lease agreement involving the employee, employer, and finance company.  
+4. **Salary Deductions**: The employer deducts lease payments from the employee's pre-tax salary.  
+5. **Vehicle Use**: Drive the vehicle while WhipSmart manages associated running costs.  
+6. **Lease Conclusion**: At the end of the lease, choose to trade in, refinance, or purchase the vehicle.  
+METADATA:  
+- page: 1  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: FAQ Everything you need to know  
+- section: How It Works  
+- description: Step-by-step explanation of the novated leasing process with WhipSmart.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-006===
+Q: What customer support does WhipSmart provide?  
+A: WhipSmart provides 24/7 Australian-based customer support and offers an easy online application process for novated leasing.  
+METADATA:  
+- page: 1  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: FAQ Everything you need to know  
+- section: How It Works  
+- description: Details about WhipSmart's customer support and application process.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-007===
+Q: Are novated leases and car loans the same thing?  
+A: No, novated leases and car loans are not the same. Car loans are repaid with post-tax income, whereas novated lease payments are made from pre-tax salary, reducing taxable income. This often results in greater tax savings with a novated lease compared to the interest costs of a loan.  
+METADATA:  
+- page: 1  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: FAQ Everything you need to know  
+- section: Novated Leases  
+- description: Comparison between novated leases and car loans, highlighting tax advantages.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-008===
+Q: What are the benefits of a novated lease?  
+A: The benefits of a novated lease include:  
+- **Tax Savings**: Payments are deducted from pre-tax salary, reducing taxable income.  
+- **Convenience**: The lease can cover not only the vehicle but also expenses like electricity, maintenance, tyres, and insurance, bundled into one regular payment.  
+METADATA:  
+- page: 1  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: FAQ Everything you need to know  
+- section: Novated Leases  
+- description: Overview of the financial and practical benefits of novated leasing.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-009===
+Q: Can any employee in Australia take out a novated lease?  
+A: Most employees in Australia can take out a novated lease, provided their employer offers it as part of salary packaging.  
+METADATA:  
+- page: 1  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: FAQ Everything you need to know  
+- section: Novated Leases  
+- description: Eligibility criteria for employees to access novated leasing.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-010===
+Q: What is included in a novated lease payment?  
+A: A novated lease payment typically includes the cost of the vehicle, maintenance, tyres, and insurance, all bundled into one regular payment.  
+METADATA:  
+- page: N/A  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: WhipSmart FAQs  
+- section: General Information  
+- description: Details about what is included in a novated lease payment.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-011===
+Q: Can any employee in Australia take out a novated lease?  
+A: Most employees in Australia can take out a novated lease, provided their employer offers it as part of salary packaging. If the employer does not offer it, WhipSmart can liaise with employers to set it up, as it is straightforward to implement and manage.  
+METADATA:  
+- page: N/A  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: WhipSmart FAQs  
+- section: General Information  
+- description: Explanation of eligibility for novated leases and WhipSmart's role in assisting employers to set it up.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-012===
+Q: What happens at the end of a novated lease?  
+A: At the end of a novated lease, options typically include:  
+1. Returning the vehicle.  
+2. Extending the lease.  
+3. Purchasing the vehicle for its residual value as agreed at the lease's inception.  
+METADATA:  
+- page: N/A  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: WhipSmart FAQs  
+- section: General Information  
+- description: Overview of the options available at the end of a novated lease.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-013===
+Q: Can I choose any car with a novated lease?  
+A: Yes, employees can choose new or used cars and select the make and model, subject to approval.  
+METADATA:  
+- page: N/A  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: WhipSmart FAQs  
+- section: General Information  
+- description: Information about the flexibility of car selection in a novated lease.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-014===
+Q: How is WhipSmart different from other providers?  
+A: WhipSmart adopts a customer-first approach, ensuring services and solutions are tailored to meet individual needs and preferences. They prioritize customer satisfaction by offering personalized support and guidance throughout the leasing process to ensure it aligns with specific requirements.  
+METADATA:  
+- page: N/A  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: WhipSmart FAQs  
+- section: How We’re Different  
+- description: Explanation of WhipSmart's customer-first approach and personalized services.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-015===
+Q: What makes WhipSmart's fee structure and charges different from others?  
+A: WhipSmart stands out by being completely transparent about fees and charges. From the beginning, customers have a clear understanding of all costs associated with their novated lease, without any hidden fees. This transparency ensures informed financial decisions without surprises.  
+METADATA:  
+- page: N/A  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: WhipSmart FAQs  
+- section: How We’re Different  
+- description: Details about WhipSmart's transparent fee structure and charges.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-016===
+Q: What features does WhipSmart's website offer for profile management?  
+A: WhipSmart's website includes advanced profile management tools that allow users to easily track and manage accrued funds. It simplifies the process of claiming payments and provides a user-friendly interface for seamless management of leasing accounts.  
+METADATA:  
+- page: N/A  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: WhipSmart FAQs  
+- section: How We’re Different  
+- description: Overview of WhipSmart's website features for managing leasing accounts.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-017===
+Q: How does WhipSmart assist customers in finding the best deal on their car?  
+A: WhipSmart works closely with customers to find the best deal on their car. The team conducts comprehensive market research to ensure customers get the most value for their money. They negotiate on behalf of customers, leveraging industry connections and expertise to secure competitive pricing and favorable terms.  
+METADATA:  
+- page: N/A  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: WhipSmart FAQs  
+- section: How We’re Different  
+- description: Explanation of how WhipSmart helps customers secure the best car deals.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-018===
+Q: What steps is WhipSmart taking to make buying, owning, and upgrading electric vehicles easier?  
+A: WhipSmart aims to make the process of buying, owning, and upgrading electric vehicles as easy as upgrading a mobile phone. Their services support electric vehicle owners by facilitating initial purchases, managing ongoing maintenance, and preparing for future upgrades. They also provide guidance on incentives, charging infrastructure, and other key aspects of electric vehicle ownership.  
+METADATA:  
+- page: N/A  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: WhipSmart FAQs  
+- section: How We’re Different  
+- description: Details on WhipSmart's efforts to simplify electric vehicle ownership and upgrades.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-019===
+Q: How does WhipSmart support a seamless electric vehicle ownership experience?  
+A: WhipSmart provides comprehensive support for electric vehicle ownership, including:  
+- Assistance with installation of home charging stations.  
+- Advice on maximizing government incentives.  
+- Tailored maintenance packages.  
+This ensures a convenient and eco-friendly transition to electric vehicle ownership.  
+METADATA:  
+- page: N/A  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: WhipSmart FAQs  
+- section: How We’re Different  
+- description: Overview of WhipSmart's support services for electric vehicle ownership.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-020===
+Q: Are there any risks associated with novated leases?  
+A: Yes, there are risks associated with novated leases, including:  
+1. Commitment to ongoing payments, which continue even if employment circumstances change.  
+2. Potential end-of-lease costs if the car’s market value is less than the residual value.  
+3. Additional charges for excess kilometers and wear and tear.  
+METADATA:  
+- page: N/A  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: WhipSmart FAQs  
+- section: What You Need to Consider  
+- description: Explanation of the risks involved in novated leases.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-021===
+Q: How do novated leases affect tax and superannuation?  
+A: [No specific answer provided in the text for this question.]  
+METADATA:  
+- page: N/A  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: WhipSmart FAQs  
+- section: What You Need to Consider  
+- description: Placeholder for information on how novated leases affect tax and superannuation.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-022===
+Q: How do novated lease payments affect tax and superannuation?  
+A: Novated lease payments made from pre-tax income can reduce an employee’s taxable income, potentially leading to tax savings. However, the value of the benefit might be added back for superannuation guarantee calculations or other purposes. It is recommended to consult with a financial advisor or tax specialist to understand the specific impacts. Additionally, a novated lease helps save on income tax over the life of the lease. WhipSmart specializes in leases for electric vehicles, which are currently exempt from Fringe Benefits Tax (FBT).  
+METADATA:  
+- page: N/A  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: WhipSmart FAQs  
+- section: Tax and Superannuation Impacts of Novated Leasing  
+- description: Explanation of how novated lease payments affect taxable income, superannuation, and Fringe Benefits Tax (FBT).  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-023===
+Q: Is a novated lease the right option for me?  
+A: A novated lease may be suitable if you’re looking for a cost-effective and tax-efficient way to own a car. It is ideal for individuals who want to bundle vehicle costs into one convenient payment, potentially reduce taxable income, and enjoy the flexibility of choosing their vehicle.  
+METADATA:  
+- page: N/A  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: WhipSmart FAQs  
+- section: Suitability of Novated Leasing  
+- description: Details on who might benefit from a novated lease and its advantages.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-024===
+Q: How does my income level affect the benefits of a novated lease?  
+A: The benefits of a novated lease can vary based on your income level. Higher-income earners might find greater tax benefits due to the reduction in taxable income. It is advisable to consult with a financial advisor to understand how a novated lease could affect your specific tax situation.  
+METADATA:  
+- page: N/A  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: WhipSmart FAQs  
+- section: Income Level and Novated Lease Benefits  
+- description: Explanation of how income levels influence the tax benefits of a novated lease.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-025===
+Q: Can I get a novated lease without an employer?  
+A: Typically, a novated lease arrangement requires an employer to agree to the salary packaging arrangement, as the lease payments are made from your pre-tax salary through your employer. If you’re self-employed or do not have an employer who offers novated leasing, you might need to explore alternative financing options.  
+METADATA:  
+- page: N/A  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: WhipSmart FAQs  
+- section: Employer Requirement for Novated Leasing  
+- description: Information on the necessity of employer involvement in novated lease arrangements.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-026===
+Q: What are the long-term financial obligations of a novated lease?  
+A: While a novated lease can offer immediate tax benefits and convenience, it’s essential to consider the long-term implications, including the total cost of the lease with interest, the residual payment at the end, and any potential end-of-lease charges. Evaluating these factors can help determine if a novated lease is financially beneficial in the long run.  
+METADATA:  
+- page: N/A  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: WhipSmart FAQs  
+- section: Long-Term Financial Obligations of Novated Leasing  
+- description: Overview of the financial considerations and obligations involved in a novated lease.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-027===
+Q: How does a novated lease compare to buying a car with cash or a loan?  
+A: Comparing a novated lease to buying a car with cash or a loan involves assessing upfront costs, ongoing expenses, tax implications, and ownership aspirations. A novated lease can offer tax benefits and include vehicle running costs, while buying outright or with a loan provides immediate ownership but lacks the tax advantages of leasing.  
+METADATA:  
+- page: N/A  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: WhipSmart FAQs  
+- section: Novated Lease vs. Buying a Car  
+- description: Comparison of the financial and practical differences between novated leasing and purchasing a car outright or with a loan.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-028===
+Q: What happens if I leave my job during the lease term?  
+A: If you leave your job during the lease term, you typically have several options:  
+1. Transferring the lease to a new employer.  
+2. Continuing the lease payments yourself after-tax.  
+3. Terminating the lease early, which may incur additional costs.  
+METADATA:  
+- page: N/A  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: WhipSmart FAQs  
+- section: Job Change During Lease Term  
+- description: Explanation of options available if an individual leaves their job during a novated lease term.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-029===
+Q: What is a residual or balloon payment in a novated lease?  
+A: A residual or balloon payment is a lump sum payment due at the end of a novated lease term. It represents the remaining value of the vehicle and must be paid to finalize the lease agreement or to take ownership of the car.  
+METADATA:  
+- page: N/A  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: WhipSmart FAQs  
+- section: Residual or Balloon Payments in Novated Leasing  
+- description: Definition and explanation of residual or balloon payments in the context of novated leases.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-030===
+Q: How is the residual value determined in a novated lease?  
+A: The residual value is predetermined at the beginning of the lease based on the Australian Taxation Office (ATO) guidelines. These guidelines specify minimum residual values as a percentage of the vehicle’s initial value, depending on the lease term.  
+METADATA:  
+- page: N/A  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: WhipSmart FAQs  
+- section: Residual or Balloon Payments in Novated Leasing  
+- description: Details on how the residual value is calculated according to ATO guidelines.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-031===
+Q: Why do novated leases have residual payments?  
+A: Residual payments are used to lower the monthly lease payments throughout the term of the lease, making the vehicle more affordable on a month-to-month basis. The residual payment reflects the estimated market value of the vehicle at the end of the lease.  
+METADATA:  
+- page: N/A  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: WhipSmart FAQs  
+- section: Residual or Balloon Payments in Novated Leasing  
+- description: Explanation of the purpose of residual payments in novated leases.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-032===
+Q: Can I finance the residual payment at the end of the lease?  
+A: Yes, it is possible to finance the residual payment at the end of the lease. This allows you to spread the cost of the residual payment over time instead of paying it as a lump sum.  
+METADATA:  
+- page: N/A  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: WhipSmart FAQs  
+- section: Residual or Balloon Payments in Novated Leasing  
+- description: Information on financing options for residual payments at the end of a novated lease.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-033===
+Q: What is the residual payment in a vehicle lease?  
+A: The residual payment reflects the estimated market value of the vehicle at the end of the lease. It is a lump sum payment that makes the vehicle more affordable on a month-to-month basis during the lease term.  
+METADATA:  
+- page: N/A  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: WhipSmart FAQs  
+- section: Residual Payments  
+- description: Explanation of what a residual payment is in the context of a vehicle lease.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-034===
+Q: Can I finance the residual payment at the end of the lease?  
+A: Yes, in many cases, you can either refinance the residual amount into a new lease or take out a loan to pay off the balloon payment. This allows you to keep the car after the lease ends.  
+METADATA:  
+- page: N/A  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: WhipSmart FAQs  
+- section: Residual Payments  
+- description: Options for financing the residual payment at the end of a vehicle lease.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-035===
+Q: What happens if I can’t afford the residual payment at the end of my lease?  
+A: If you’re unable to afford the residual payment at the end of your lease, options may include:  
+- Refinancing the residual amount.  
+- Trading in the vehicle.  
+- Discussing other arrangements with your lease provider.  
+METADATA:  
+- page: N/A  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: WhipSmart FAQs  
+- section: Residual Payments  
+- description: Options available if the residual payment cannot be afforded at the end of a lease.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-036===
+Q: Is it possible to reduce the residual payment during a lease?  
+A: The residual value is set according to ATO guidelines and agreed upon at the start of the lease, making it difficult to reduce after the lease has commenced. However, choosing a shorter lease term can lead to a higher residual percentage, which may affect overall costs.  
+METADATA:  
+- page: N/A  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: WhipSmart FAQs  
+- section: Residual Payments  
+- description: Explanation of whether the residual payment can be reduced during a lease and factors affecting it.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-037===
+Q: How does the residual payment affect my tax benefits?  
+A: While the monthly lease payments can reduce your taxable income, the residual payment itself does not directly affect tax benefits. It is a payment for the vehicle’s value at lease end and does not influence the tax advantages gained during the lease term.  
+METADATA:  
+- page: N/A  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: WhipSmart FAQs  
+- section: Residual Payments  
+- description: Explanation of how the residual payment impacts tax benefits during a vehicle lease.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-038===
+Q: What are the risks associated with residual payments?  
+A: The main risk associated with residual payments is the possibility that the vehicle’s market value at the end of the lease is lower than the residual value. If you choose to sell the car rather than pay the residual, you might need to cover the difference out of pocket.  
+METADATA:  
+- page: N/A  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: WhipSmart FAQs  
+- section: Residual Payments  
+- description: Risks involved with residual payments, particularly regarding the vehicle’s market value versus residual value.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-039===
+Q: Can I negotiate the residual value of a vehicle lease?  
+A: Generally, the residual value is based on ATO guidelines and is not subject to negotiation. However, you can choose a lease term that aligns with your financial goals and the expected depreciation of the vehicle.  
+METADATA:  
+- page: N/A  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: WhipSmart FAQs  
+- section: Residual Payments  
+- description: Information on whether the residual value in a vehicle lease can be negotiated and factors to consider.  
+- reference_url: https://whipsmart.au/faq/  
+---
+
+===Q&A-040===
+Q: What is the website and email address for WhipSmart?  
+A: The website for WhipSmart is whipsmart.au, and the email address is info@whipsmart.au.  
+METADATA:  
+- page: N/A  
+- filename: WhipSmart FAQs May 25.pdf  
+- title: WhipSmart FAQs  
+- section: Contact Information  
+- description: Contact details for WhipSmart, including website and email address.  
+- reference_url: https://whipsmart.au/faq/  
+---

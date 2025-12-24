@@ -271,7 +271,7 @@ def extract_text_from_file(file_path: Path, file_type: str) -> str:
         raise
 
 
-def process_document(file_url: str, file_type: str, document_id: str, title: str, save_to_db: bool = True) -> List[Tuple[str, str, dict]]:
+def process_document(file_url: str, file_type: str, document_id: str, title: str, save_to_db: bool = True, progress_callback=None) -> List[Tuple[str, str, dict]]:
     """
     Process a document: extract text, chunk it, and optionally store chunks in DB.
     Stores document_id in metadata for easy deletion.
@@ -323,8 +323,12 @@ def process_document(file_url: str, file_type: str, document_id: str, title: str
         logger.info(f"Extracted {len(text)} characters from file '{file_path}'")
         
         # Chunk the text
+        if progress_callback:
+            progress_callback("Splitting text into chunks...")
         chunks = chunk_text(text)
         logger.info(f"Created {len(chunks)} chunks from {title}")
+        if progress_callback:
+            progress_callback(f"Split text into {len(chunks)} chunks")
         
         # Extract file name from URL
         file_name = Path(parsed_url.path).name if parsed_url.path else Path(file_url).name
@@ -339,6 +343,8 @@ def process_document(file_url: str, file_type: str, document_id: str, title: str
                 save_to_db = False
         
         # Prepare chunks with metadata (including document_id for easy deletion)
+        if progress_callback:
+            progress_callback("Preparing chunks for database...")
         processed_chunks = []
         chunk_objects = []
         
@@ -371,6 +377,8 @@ def process_document(file_url: str, file_type: str, document_id: str, title: str
         
         # Save chunks to database using bulk operations (much faster!)
         if save_to_db and document and chunk_objects:
+            if progress_callback:
+                progress_callback(f"Saving {len(chunk_objects)} chunks to database...")
             from django.db import transaction
             
             with transaction.atomic():
@@ -382,6 +390,8 @@ def process_document(file_url: str, file_type: str, document_id: str, title: str
                 
                 # Update document state and chunk count
                 document.chunk_count = len(chunks)
+            if progress_callback:
+                progress_callback(f"Saved {len(chunk_objects)} chunks to database")
                 document.state = 'chunked'
                 document.save(update_fields=['chunk_count', 'state'])
                 
