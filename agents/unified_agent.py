@@ -472,35 +472,66 @@ class UnifiedAgent:
         """
         Check if we should subtly ask for the user's name.
         Returns True if:
-        - User has asked 3-4 questions (user messages)
+        - User has asked 2-3 questions (user messages)
         - Name is not yet collected
         
-        Note: We count user messages in history. The current message being processed
-        is not yet in history, so if history has 2-3 user messages, the current one
-        is the 3rd or 4th question.
+        Note: We count ALL user messages in the session, not just the limited history.
+        The current message being processed is not yet saved, so we count existing messages.
         """
         if current_name:
             return False
         
-        # Count user messages (questions) in conversation history
-        user_message_count = sum(1 for msg in conversation_history if msg.get('role') == 'user')
-        
-        # After 3-4 questions (current message is 3rd or 4th), we should ask for name
-        # If history has 2-3 user messages, the current one is the 3rd or 4th
-        return 2 <= user_message_count <= 3
+        # Count ALL user messages in the session (not just limited history)
+        from chats.models import ChatMessage
+        try:
+            total_user_messages = ChatMessage.objects.filter(
+                session=self.session,
+                is_deleted=False,
+                role='user'
+            ).count()
+            
+            # After 2-3 questions, we should ask for name
+            # Current message will be the 3rd or 4th question
+            should_ask = 2 <= total_user_messages <= 3
+            
+            if should_ask:
+                logger.info(f"[NAME COLLECTION] Should ask for name: {total_user_messages} user messages found")
+            
+            return should_ask
+        except Exception as e:
+            logger.error(f"Error counting user messages: {str(e)}")
+            # Fallback to history-based counting
+            user_message_count = sum(1 for msg in conversation_history if msg.get('role') == 'user')
+            return 2 <= user_message_count <= 3
     
     def _should_offer_team_connection(self, conversation_history: list) -> bool:
         """
         Check if we should offer team connection.
-        Returns True if user has asked 3-4 questions (same as name asking).
+        Returns True if user has asked 3-4 questions.
         This ensures we don't offer team connection at the start.
         """
-        # Count user messages (questions) in conversation history
-        user_message_count = sum(1 for msg in conversation_history if msg.get('role') == 'user')
-        
-        # After 3-4 questions (current message is 3rd or 4th), we can offer team connection
-        # If history has 2-3 user messages, the current one is the 3rd or 4th
-        return 2 <= user_message_count <= 3
+        # Count ALL user messages in the session (not just limited history)
+        from chats.models import ChatMessage
+        try:
+            total_user_messages = ChatMessage.objects.filter(
+                session=self.session,
+                is_deleted=False,
+                role='user'
+            ).count()
+            
+            # After 3-4 questions, we can offer team connection
+            # Current message will be the 4th or 5th question
+            should_offer = 3 <= total_user_messages <= 4
+            
+            if should_offer:
+                logger.info(f"[TEAM CONNECTION] Should offer team connection: {total_user_messages} user messages found")
+            
+            return should_offer
+        except Exception as e:
+            logger.error(f"Error counting user messages: {str(e)}")
+            # Fallback to history-based counting
+            user_message_count = sum(1 for msg in conversation_history if msg.get('role') == 'user')
+            return 3 <= user_message_count <= 4
     
     def _handle_domain_question_with_rag(
         self, client, model, messages, tools, user_message, 
@@ -518,6 +549,11 @@ class UnifiedAgent:
         Optimized for speed (5-6 seconds max).
         """
         try:
+            # Get current state for name/team connection checks
+            current_name = self.conversation_data.get('name', '')
+            should_ask_for_name = self._should_ask_for_name(conversation_history, current_name)
+            should_offer_team_connection = self._should_offer_team_connection(conversation_history)
+            
             # Use Multi-Agent Reasoning System
             multi_agent = MultiAgentReasoning(client, model)
             
@@ -530,6 +566,52 @@ class UnifiedAgent:
             
             # Normalize newlines
             assistant_message = self._normalize_newlines(assistant_message)
+            
+            # Add name collection or team connection request if needed (using follow-up LLM call for natural integration)
+            if (should_ask_for_name and not current_name) or (should_offer_team_connection and not should_ask_for_name):
+                try:
+                    enhancement_prompt = f"""You are Alex AI, WhipSmart's assistant. You just provided this answer to a user's question:
+
+{assistant_message}
+
+"""
+                    if should_ask_for_name and not current_name:
+                        enhancement_prompt += """CRITICAL: The user has asked 2-3 questions but hasn't provided their name yet. You MUST naturally ask for their name at the end of your response. Examples:
+- "By the way, I'd love to know your name so I can personalize our conversation! What should I call you?"
+- "I'd like to address you properly - may I know your name?"
+Make it feel natural and conversational."""
+                    
+                    if should_offer_team_connection and not should_ask_for_name:
+                        enhancement_prompt += """CRITICAL: The user has asked 3-4 questions. You MUST offer to connect them with our team at the end of your response. Examples:
+- "Would you like to connect with our team to explore how a novated lease could work for you? They can provide more personalised assistance!"
+- "I can connect you with our team to get personalized assistance. Would you like me to do that?"
+Make it natural and helpful."""
+                    
+                    enhancement_prompt += "\n\nTask: Return ONLY the enhanced answer that includes your original answer PLUS the name request or team connection offer at the end. Keep it natural and flowing."
+                    
+                    enhancement_response = client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": "You are Alex AI, WhipSmart's assistant. You enhance answers by naturally adding name requests or team connection offers."
+                            },
+                            {"role": "user", "content": enhancement_prompt}
+                        ],
+                        temperature=0.7,
+                        max_tokens=800
+                    )
+                    
+                    enhanced_message = enhancement_response.choices[0].message.content.strip()
+                    assistant_message = self._normalize_newlines(enhanced_message)
+                    logger.info("[MULTI-AGENT] Enhanced answer with name/team connection request")
+                except Exception as e:
+                    logger.error(f"[MULTI-AGENT] Error enhancing answer: {str(e)}")
+                    # Fallback: append directly
+                    if should_ask_for_name and not current_name:
+                        assistant_message += "\n\nBy the way, I'd love to know your name so I can personalize our conversation! What should I call you?"
+                    if should_offer_team_connection and not should_ask_for_name:
+                        assistant_message += "\n\nWould you like to connect with our team to explore how a novated lease could work for you? They can provide more personalised assistance!"
             
             # Generate suggestions
             needs_info = self._get_needs_info()
@@ -620,7 +702,7 @@ So, whether you're after a new car or a lease, we're here to help!"""
                     model=model,
                     messages=understanding_messages,
                     temperature=0.3,
-                    max_tokens=600  # Reduced for shorter draft answers
+                    max_tokens=800  # Increased to allow complete draft answers
                 )
                 
                 draft_analysis = understanding_response.choices[0].message.content.strip()
@@ -698,7 +780,7 @@ So, whether you're after a new car or a lease, we're here to help!"""
                     model=model,
                     messages=revalidation_messages,
                     temperature=0.4,
-                    max_tokens=700  # Reduced for shorter improved answers
+                    max_tokens=900  # Increased to allow complete improved answers
                 )
                 
                 improved_analysis = revalidation_response.choices[0].message.content.strip()
@@ -796,13 +878,27 @@ Remember:
                     model=model,
                     messages=final_messages,
                     temperature=0.7,
-                    max_tokens=600  # Reduced for shorter, more concise answers
+                    max_tokens=1200  # Increased to ensure complete answers (was 600, causing truncation)
                 )
                 
                 assistant_message = final_response.choices[0].message.content.strip()
                 
                 # Normalize newlines: replace multiple newlines with single newline (frontend converts \n to <br>)
                 assistant_message = self._normalize_newlines(assistant_message)
+                
+                # Validate answer completeness
+                if not self._is_answer_complete(assistant_message):
+                    logger.warning("[TWO-STEP] Answer appears incomplete, regenerating with higher token limit...")
+                    # Regenerate with higher token limit
+                    final_messages[-1]["content"] = final_messages[-1]["content"] + "\n\nIMPORTANT: Ensure your answer is complete and ends with a proper conclusion. Do not cut off mid-sentence."
+                    final_response = client.chat.completions.create(
+                        model=model,
+                        messages=final_messages,
+                        temperature=0.7,
+                        max_tokens=1500  # Higher limit for regeneration
+                    )
+                    assistant_message = final_response.choices[0].message.content.strip()
+                    assistant_message = self._normalize_newlines(assistant_message)
                 
                 # Generate suggestions
                 needs_info = self._get_needs_info()
@@ -902,12 +998,26 @@ So, whether you're after a new car or a lease, we're here to help!"""
                     model=model,
                     messages=fallback_messages,
                     temperature=0.7,
-                    max_tokens=500  # Reduced for shorter, more concise answers
+                    max_tokens=1200  # Increased to ensure complete answers (was 500, causing truncation)
                 )
                 
                 assistant_message = fallback_response.choices[0].message.content.strip()
                 # Normalize newlines: replace multiple newlines with single newline (frontend converts \n to <br>)
                 assistant_message = self._normalize_newlines(assistant_message)
+                
+                # Validate answer completeness
+                if not self._is_answer_complete(assistant_message):
+                    logger.warning("[FALLBACK] Answer appears incomplete, regenerating with higher token limit...")
+                    # Regenerate with higher token limit
+                    fallback_messages[-1]["content"] = fallback_messages[-1]["content"] + "\n\nIMPORTANT: Ensure your answer is complete and ends with a proper conclusion. Do not cut off mid-sentence."
+                    fallback_response = client.chat.completions.create(
+                        model=model,
+                        messages=fallback_messages,
+                        temperature=0.7,
+                        max_tokens=1500  # Higher limit for regeneration
+                    )
+                    assistant_message = fallback_response.choices[0].message.content.strip()
+                    assistant_message = self._normalize_newlines(assistant_message)
                 needs_info = self._get_needs_info()
                 suggestions = self._generate_suggestions(assistant_message, user_message, "search_knowledge_base")
                 
@@ -951,6 +1061,47 @@ So, whether you're after a new car or a lease, we're here to help!"""
         # Normalize excessive newlines (3+ consecutive) to \n\n
         # This preserves intentional \n\n while removing unwanted \n\n\n+
         return re.sub(r'\n{3,}', '\n\n', text)
+    
+    def _is_answer_complete(self, answer: str) -> bool:
+        """
+        Check if an answer is complete (doesn't end mid-sentence).
+        
+        Returns True if answer appears complete, False if it seems truncated.
+        """
+        if not answer or len(answer.strip()) < 10:
+            return False
+        
+        # Remove trailing whitespace and newlines
+        answer_trimmed = answer.strip()
+        
+        # Check if answer ends with proper punctuation
+        proper_endings = ['.', '!', '?', ':', ';']
+        if answer_trimmed[-1] in proper_endings:
+            return True
+        
+        # Check for incomplete sentence patterns
+        incomplete_patterns = [
+            r'\b(by|with|for|to|in|on|at|from|of|and|or|but|if|when|where|how|what|why|who)\s*$',
+            r'\b(evaluating|considering|reviewing|analyzing|examining|assessing)\s*$',
+            r'\b(that|which|who|whom|whose)\s*$',
+            r'^[A-Z][a-z]+\s*$',  # Single word at end
+        ]
+        
+        import re
+        for pattern in incomplete_patterns:
+            if re.search(pattern, answer_trimmed, re.IGNORECASE):
+                logger.warning(f"[UNIFIED AGENT] Answer appears incomplete (pattern: {pattern})")
+                return False
+        
+        # If answer is very short and doesn't end with punctuation, might be incomplete
+        if len(answer_trimmed) < 50 and answer_trimmed[-1] not in proper_endings:
+            return False
+        
+        # If answer ends with a comma or dash, likely incomplete
+        if answer_trimmed[-1] in [',', '-', '—']:
+            return False
+        
+        return True
     
     def _extract_final_answer(self, improved_analysis: str, draft_analysis: str) -> str:
         """Extract the final answer from the improved analysis."""
@@ -1024,6 +1175,16 @@ CURRENT STATE:
 - Phone: {phone}
 - Step: {step}
 
+CRITICAL: USING STORED INFORMATION:
+- If Name is provided (not "Not provided"), ALWAYS use it when addressing the user (e.g., "Thanks, {name}!" or "{name}, here's what I found...")
+- If Name is provided, NEVER ask for the user's name again - you already have it
+- If Email is provided (not "Not provided"), NEVER ask for email again - you already have it
+- If Phone is provided (not "Not provided"), NEVER ask for phone again - you already have it
+- ALWAYS check the CURRENT STATE before asking for any information - if it's already stored, use it and don't ask again
+- When user provides their name naturally in conversation (e.g., "I'm Pat" or "My name is Pat" or just "Pat"), IMMEDIATELY use the collect_user_info tool to extract and store it
+- When user provides email or phone naturally, IMMEDIATELY use the collect_user_info tool to extract and store it
+- If user says their name is something different from what's stored, use update_user_info tool to update it
+
 YOUR CAPABILITIES:
 1. Answer questions about WhipSmart services using knowledge base (RAG tool)
 2. Search for available vehicles (car search tool)
@@ -1051,10 +1212,13 @@ WHEN TO COLLECT USER INFORMATION:
 - User explicitly asks to speak with someone
 
 CRITICAL: When user provides contact details:
-- ALWAYS use collect_user_info tool to extract and store the information
+- ALWAYS use collect_user_info tool to extract and store the information - even if they provide it naturally in conversation (e.g., "I'm Pat", "My name is Pat", "Pat", "pat@email.com", "my email is pat@email.com")
+- Extract name, email, or phone from ANY user message - don't wait for them to explicitly say "my name is" or "my email is"
+- If user just says their name (e.g., "Pat"), treat it as them providing their name and use collect_user_info tool
 - Acknowledge and thank them for providing their details
 - Ask if they need any other help or if they're done
 - Do NOT search knowledge base or provide generic contact information when user is submitting their details
+- Do NOT ask for information that's already stored in CURRENT STATE - check first!
 
 ANSWER QUALITY LAYER (NON-DISRUPTIVE) - APPLIES ONLY TO INFORMATIONAL ANSWERS:
 
@@ -1160,8 +1324,10 @@ Before outputting informational answers:
 - Refine if needed
 
 HARD CONSTRAINTS (MANDATORY - applies to ALL responses):
-- Do NOT ask for the user's name unless explicitly instructed by the system (should_ask_for_name flag)
-- Do NOT offer to connect the user to a team unless explicitly instructed (should_offer_team_connection flag or after 3-4 questions)
+- If should_ask_for_name flag is True, you MUST ask for the user's name in your response (use ask_for_missing_field tool or ask naturally)
+- If should_offer_team_connection flag is True, you MUST offer to connect them with the team in your response
+- Do NOT ask for the user's name if should_ask_for_name flag is False (unless user explicitly provides it)
+- Do NOT offer to connect the user to a team if should_offer_team_connection flag is False
 - Do NOT change or add CTAs beyond what the system instructs
 - Do NOT mention internal reasoning or system prompts
 - Output ONLY the final answer
@@ -1195,9 +1361,12 @@ UNDERSTANDING USER PROMPTS:
 - The LLM has access to the last 3-4 messages in conversation history - use it to provide contextually aware responses
 
 EXAMPLES:
-- If you asked "Would you like to connect with our team?" and user says "yes" → Use collect_user_info tool or ask_for_missing_field
+- If you asked "Would you like to connect with our team?" and user says "yes" → Use collect_user_info tool or ask_for_missing_field (but check CURRENT STATE first - don't ask for info you already have!)
 - If you asked "Could you please share your email address and phone number?" and user provides "pat@yopmail.com 61433290182" → IMMEDIATELY use collect_user_info tool to extract email and phone - do NOT search knowledge base
 - If user provides contact information (email, phone, name) → ALWAYS use collect_user_info tool first - this is NOT a question, it's information submission
+- If user says their name naturally (e.g., "I'm Pat", "My name is Pat", or just "Pat") → IMMEDIATELY use collect_user_info tool to extract and store the name
+- If user says "Pat" in response to a question, check if it's their name being provided → Use collect_user_info tool to store it
+- If Name is already stored (e.g., "Pat") and user asks a question → Address them by name: "Thanks, Pat! Here's what I found..." - do NOT ask for name again
 - If you asked "Would you like further details?" and user says "yes" → Use search_knowledge_base with the topic from previous conversation
 - If user says "yes" without clear context → Look at last assistant message to understand what they're agreeing to
 - If user says "I'm done", "no more questions", "thank you, goodbye", "that's all" → Use end_conversation tool
@@ -1207,23 +1376,40 @@ EXAMPLES:
 - If user seems satisfied after getting an answer (ONLY after 3-4 questions) → Offer: "Are you interested in learning more? We can connect you with our team." or use end_conversation if they indicate they're done
 - IMPORTANT: Do NOT offer team connection in the first 2 questions
 - CRITICAL: When user provides contact details (email/phone), acknowledge and thank them, then ask if they need other help or if they're done
+- CRITICAL: If Name is already stored, use it in your responses - personalize the conversation by addressing them by name
 
-Remember: You are Alex AI with a professional Australian accent - be warm, friendly, and professional. Your MAIN GOAL is conversion - understand user intent, answer questions, and guide them to connect with our team (but only after 3-4 questions, not at the start). Always use Australian expressions naturally and professionally.""".format(
+Remember: You are Alex AI with a professional Australian accent - be warm, friendly, and professional. Your MAIN GOAL is conversion - understand user intent, answer questions, and guide them to connect with our team (but only after 3-4 questions, not at the start). Always use Australian expressions naturally and professionally.
+
+FINAL REMINDER ABOUT STORED INFORMATION:
+- Check the CURRENT STATE above - if Name shows an actual name (not "Not provided"), you MUST use it in your response
+- If Name is stored, address the user by name (e.g., "Thanks, {name}!" or "{name}, here's what I found...")
+- If Name is stored, NEVER ask "What should I call you?" or "May I know your name?" - you already have it!
+- If Email or Phone is stored, NEVER ask for it again - you already have it
+- When user provides their name naturally (even just saying "Pat"), extract it using collect_user_info tool immediately
+
+CRITICAL ACTION ITEMS (MUST FOLLOW - CHECK FLAGS ABOVE):
+- If should_ask_for_name flag is True: You MUST ask for the user's name in this response (use ask_for_missing_field tool with field='name' OR ask naturally)
+- If should_offer_team_connection flag is True: You MUST offer team connection in this response (unless you're also asking for name - then offer in next response)
+- These are MANDATORY actions when flags are True - do not skip them""".format(
             name=name or "Not provided",
             email=email or "Not provided",
             phone=phone or "Not provided",
             step=step
         )
         
-        # Add subtle instruction to ask for name if needed
+        # Add instruction to ask for name if needed
         if should_ask_for_name:
-            prompt += "\n\nIMPORTANT: The user has asked several questions but hasn't provided their name yet. In your response, SUBTLY and NATURALLY ask for their name. For example, you could say: 'By the way, I'd love to know your name so I can personalize our conversation!' or 'What should I call you?' or 'I'd like to address you properly - may I know your name?' Make it feel natural and conversational, not forced. Do this AFTER answering their current question. CRITICAL: Do NOT offer team connection in the same message when asking for name - keep them separate."
+            logger.info(f"[NAME COLLECTION] Flag set to True - instructing LLM to ask for name. Current name: {current_name}")
+            prompt += "\n\n🚨 CRITICAL INSTRUCTION - NAME COLLECTION (MANDATORY): 🚨\nThe user has asked 2-3 questions but hasn't provided their name yet. You MUST ask for their name in your response.\n\nOPTIONS:\n1. Use the ask_for_missing_field tool with field='name' (RECOMMENDED)\n2. OR naturally ask in your response after answering their question\n\nExamples of natural asking:\n- 'By the way, I'd love to know your name so I can personalize our conversation! What should I call you?'\n- 'I'd like to address you properly - may I know your name?'\n- 'What should I call you?'\n\nIMPORTANT: Do this AFTER answering their current question. Make it feel natural and conversational.\nCRITICAL: Do NOT offer team connection in the same message when asking for name - keep them separate."
         
         # Add instruction about when to offer team connection
         if should_offer_team_connection:
-            prompt += "\n\nIMPORTANT: The user has asked 3-4 questions. You can now offer to connect them with our team. However, if you are also asking for their name in this response, do NOT offer team connection in the same message - offer it in a separate follow-up message instead. When offering team connection, use: 'Would you like to connect with our team to explore how a novated lease could work for you? They can provide more personalised assistance!'"
+            logger.info(f"[TEAM CONNECTION] Flag set to True - instructing LLM to offer team connection")
+            prompt += "\n\n🚨 CRITICAL INSTRUCTION - TEAM CONNECTION (MANDATORY): 🚨\nThe user has asked 3-4 questions. You MUST offer to connect them with our team in your response.\n\nIMPORTANT: If you are also asking for their name in this response, do NOT offer team connection in the same message - offer it in a separate follow-up message instead.\n\nWhen offering team connection, use phrases like:\n- 'Would you like to connect with our team to explore how a novated lease could work for you? They can provide more personalised assistance!'\n- 'I can connect you with our team to get personalized assistance. Would you like me to do that?'\n- 'Are you interested in learning more? We can connect you with our team.'\n\nMake it natural and helpful, not pushy."
         else:
-            prompt += "\n\nIMPORTANT: This is still early in the conversation (first 2 questions). Do NOT offer team connection yet. Focus on answering their questions clearly and helpfully. Wait until after 3-4 questions before offering team connection."
+            # Only show this if we're not asking for name (to avoid confusion)
+            if not should_ask_for_name:
+                prompt += "\n\nIMPORTANT: This is still early in the conversation (first 2 questions). Do NOT offer team connection yet. Focus on answering their questions clearly and helpfully. Wait until after 3-4 questions before offering team connection."
         
         return prompt
     
@@ -1276,21 +1462,21 @@ Remember: You are Alex AI with a professional Australian accent - be warm, frien
                 "type": "function",
                 "function": {
                     "name": "collect_user_info",
-                    "description": "Extract name, email, or phone from user message and store it. CRITICAL: ALWAYS use this tool when user provides contact information (email address, phone number, or name) in their message. Use when: 1) User provides email/phone/name (e.g., 'pat@yopmail.com 61433290182'), 2) User says 'yes' to connecting with team, 3) User responds to a request for their contact details. IMPORTANT: If user provides email/phone in their message, you MUST call this tool to extract and store the information - do NOT search knowledge base or provide generic contact information.",
+                    "description": "Extract name, email, or phone from user message and store it. CRITICAL: ALWAYS use this tool when user provides contact information (email address, phone number, or name) in their message. Use when: 1) User provides email/phone/name (e.g., 'pat@yopmail.com 61433290182'), 2) User says their name naturally (e.g., 'I'm Pat', 'My name is Pat', or just 'Pat'), 3) User says 'yes' to connecting with team, 4) User responds to a request for their contact details, 5) User provides any name, email, or phone number in ANY form in their message. IMPORTANT: If user provides email/phone/name in their message (even naturally like just saying 'Pat'), you MUST call this tool to extract and store the information - do NOT search knowledge base or provide generic contact information. If the user just says a name like 'Pat' without context, treat it as them providing their name and extract it.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "name": {
                                 "type": "string",
-                                "description": "Full name if provided, otherwise null"
+                                "description": "Full name if provided in the message (even if just a single name like 'Pat'), otherwise null"
                             },
                             "email": {
                                 "type": "string",
-                                "description": "Email address if provided, otherwise null"
+                                "description": "Email address if provided in the message, otherwise null"
                             },
                             "phone": {
                                 "type": "string",
-                                "description": "Phone number if provided, otherwise null"
+                                "description": "Phone number if provided in the message, otherwise null"
                             }
                         },
                         "required": []

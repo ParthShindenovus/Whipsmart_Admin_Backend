@@ -3,7 +3,9 @@ Multi-Agent Reasoning Flow for Unified Agent
 Implements parallel agent execution with orchestrator pattern for structured answer generation.
 """
 import logging
+import time
 from typing import Dict, List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from openai import AzureOpenAI
 from django.conf import settings
 
@@ -48,16 +50,88 @@ class MultiAgentReasoning:
             Final structured answer
         """
         try:
-            # Step 1: Run parallel agents (Agent 2 already has RAG context)
-            logger.info("[MULTI-AGENT] Starting parallel agent execution...")
+            start_time = time.time()
             
+            # Step 1: Run Agent 1 first (classifier) - required by other agents
+            logger.info("[MULTI-AGENT] Starting agent execution...")
+            logger.info("[MULTI-AGENT] Step 1: Running Agent 1 (Classifier)...")
+            agent1_start = time.time()
             agent1_result = self._agent1_classifier(user_question, conversation_history)
-            agent3_result = self._agent3_structure_planner(user_question, agent1_result)
-            agent4_result = self._agent4_coverage_definer(user_question, agent1_result, rag_context)
+            agent1_time = time.time() - agent1_start
+            logger.info(f"[MULTI-AGENT] Agent 1 completed in {agent1_time:.2f}s")
             
-            logger.info("[MULTI-AGENT] Parallel agents completed")
+            # Step 2: Run Agent 3 and Agent 4 in parallel (both depend on Agent 1)
+            logger.info("[MULTI-AGENT] Step 2: Running Agent 3 and Agent 4 in parallel...")
+            parallel_start = time.time()
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                # Submit both agents to run concurrently with labels
+                future_to_agent = {
+                    executor.submit(
+                        self._agent3_structure_planner,
+                        user_question,
+                        agent1_result
+                    ): "agent3",
+                    executor.submit(
+                        self._agent4_coverage_definer,
+                        user_question,
+                        agent1_result,
+                        rag_context
+                    ): "agent4"
+                }
+                
+                # Wait for both to complete and collect results
+                agent3_result = None
+                agent4_result = None
+                
+                for future in as_completed(future_to_agent):
+                    agent_name = future_to_agent[future]
+                    try:
+                        result = future.result()
+                        if agent_name == "agent3":
+                            agent3_result = result
+                            logger.info("[MULTI-AGENT] Agent 3 (Structure Planner) completed")
+                        elif agent_name == "agent4":
+                            agent4_result = result
+                            logger.info("[MULTI-AGENT] Agent 4 (Coverage Definer) completed")
+                    except Exception as e:
+                        logger.error(f"[MULTI-AGENT] Error in {agent_name}: {str(e)}", exc_info=True)
+                        # Set fallback results if one fails
+                        if agent_name == "agent3" and agent3_result is None:
+                            agent3_result = {
+                                "length": "medium",
+                                "structure": "bullets",
+                                "ordering": "logical flow",
+                                "sections": []
+                            }
+                        elif agent_name == "agent4" and agent4_result is None:
+                            agent4_result = {
+                                "must_include": [],
+                                "optional": [],
+                                "exclude": []
+                            }
+                
+                # Ensure both results are available (fallback if needed)
+                if agent3_result is None:
+                    logger.warning("[MULTI-AGENT] Agent 3 failed, using fallback")
+                    agent3_result = {
+                        "length": "medium",
+                        "structure": "bullets",
+                        "ordering": "logical flow",
+                        "sections": []
+                    }
+                if agent4_result is None:
+                    logger.warning("[MULTI-AGENT] Agent 4 failed, using fallback")
+                    agent4_result = {
+                        "must_include": [],
+                        "optional": [],
+                        "exclude": []
+                    }
             
-            # Step 2: Assemble prompt with all agent outputs
+            parallel_time = time.time() - parallel_start
+            logger.info(f"[MULTI-AGENT] Parallel agents (Agent 3 & 4) completed in {parallel_time:.2f}s (parallel execution)")
+            
+            # Step 3: Assemble prompt with all agent outputs
+            logger.info("[MULTI-AGENT] Step 3: Assembling prompt with all agent outputs...")
             assembled_prompt = self._assemble_prompt(
                 user_question=user_question,
                 rag_context=rag_context,
@@ -67,11 +141,12 @@ class MultiAgentReasoning:
                 conversation_history=conversation_history
             )
             
-            # Step 3: Generate structured response (draft)
+            # Step 4: Generate structured response (draft)
+            logger.info("[MULTI-AGENT] Step 4: Generating structured response...")
             draft_answer = self._generate_structured_response(assembled_prompt)
             
-            # Step 4: Validate coverage (quality gate)
-            logger.info("[MULTI-AGENT] Validating draft answer...")
+            # Step 5: Validate coverage (quality gate)
+            logger.info("[MULTI-AGENT] Step 5: Validating draft answer...")
             validation_result = self._agent5_coverage_validator(
                 user_question=user_question,
                 draft_answer=draft_answer,
@@ -79,7 +154,7 @@ class MultiAgentReasoning:
                 rag_context=rag_context
             )
             
-            # Step 5: Apply fixes if needed
+            # Step 6: Apply fixes if needed
             if validation_result.get('status') == 'APPROVED':
                 logger.info("[MULTI-AGENT] Draft answer approved")
                 final_answer = draft_answer
@@ -93,7 +168,9 @@ class MultiAgentReasoning:
                     assembled_prompt=assembled_prompt
                 )
             
-            logger.info("[MULTI-AGENT] Final answer generated")
+            total_time = time.time() - start_time
+            logger.info(f"[MULTI-AGENT] Final answer generated in {total_time:.2f}s total")
+            logger.info(f"[MULTI-AGENT] Performance breakdown: Agent1={agent1_time:.2f}s, Parallel(Agent3+4)={parallel_time:.2f}s")
             return final_answer
             
         except Exception as e:
@@ -355,7 +432,7 @@ TASK: Generate a single, polished, CONCISE answer that:
 6. Applies Answer Density & Discipline: prefer concise high-value statements, avoid repetition, remove filler, each paragraph/bullet introduces distinct capability/outcome
 7. Keeps the answer SHORT - aim for 2-4 key points for most questions, 4-6 for complex ones
 
-ZIX GOLD STANDARD — STYLE & DISCIPLINE (MANDATORY):
+GOLD STANDARD — STYLE & DISCIPLINE (MANDATORY):
 
 STYLE PRINCIPLES:
 - Concise and high-signal
@@ -404,6 +481,13 @@ FINAL QUALITY CHECK:
 - Have I removed all redundancy and filler?
 - Is every sentence/bullet adding distinct value?
 - Is the answer appropriately short (2-4 points for most questions)?
+- CRITICAL: Is the answer COMPLETE? Does it end with proper punctuation and a finished thought? Never cut off mid-sentence.
+
+CRITICAL COMPLETENESS REQUIREMENT:
+- Your answer MUST be complete and end with proper punctuation (., !, ?, :, or ;)
+- Never end mid-sentence or with incomplete phrases like "By evaluating" or "When considering"
+- Always provide a proper conclusion or closing statement
+- If you're running out of tokens, prioritize completing your current thought over starting new ones
 
 Generate the answer now:"""
 
@@ -424,7 +508,7 @@ You generate clear, structured, CONCISE answers that fully address user question
 You follow Answer Quality Layer guidelines: lifecycle coverage, concrete details, but keep answers SHORT.
 You apply Answer Density & Discipline: concise high-value statements, no repetition, no filler.
 
-ZIX GOLD STANDARD — STYLE & DISCIPLINE:
+GOLD STANDARD — STYLE & DISCIPLINE:
 - Concise and high-signal; each bullet/sentence introduces DISTINCT capability or benefit
 - No internal process explanations, no roadmap/future vision unless explicitly asked
 - Present-tense, confident delivery
@@ -432,16 +516,53 @@ ZIX GOLD STANDARD — STYLE & DISCIPLINE:
 - Customer-centric language ("what this does for you"); no hype; no filler intros
 - COMPRESSION RULE: If two sentences communicate similar value, keep the stronger one, remove the other
 
-CRITICAL: REALITY & SCOPE CONSTRAINT - Only include capabilities/services/benefits explicitly in the provided context that exist today. Do NOT invent future features or expand beyond context."""
+CRITICAL: REALITY & SCOPE CONSTRAINT - Only include capabilities/services/benefits explicitly in the provided context that exist today. Do NOT invent future features or expand beyond context.
+
+CRITICAL: COMPLETENESS REQUIREMENT - Always provide a complete, finished answer. Never cut off mid-sentence. End with proper punctuation and a complete thought."""
                     },
                     {"role": "user", "content": assembled_prompt}
                 ],
                 temperature=0.7,
-                max_tokens=600  # Reduced for shorter, more concise answers
+                max_tokens=1200  # Increased to ensure complete answers (was 600, causing truncation)
             )
             
             answer = response.choices[0].message.content.strip()
-            return self._normalize_newlines(answer)
+            answer = self._normalize_newlines(answer)
+            
+            # Validate answer completeness - check if it ends mid-sentence
+            if not self._is_answer_complete(answer):
+                logger.warning("[MULTI-AGENT] Answer appears incomplete, regenerating with higher token limit...")
+                # Regenerate with higher token limit
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": """You are Alex AI, WhipSmart's expert assistant with a professional Australian accent.
+You generate clear, structured, CONCISE answers that fully address user questions.
+You follow Answer Quality Layer guidelines: lifecycle coverage, concrete details, but keep answers SHORT.
+You apply Answer Density & Discipline: concise high-value statements, no repetition, no filler.
+
+GOLD STANDARD — STYLE & DISCIPLINE:
+- Concise and high-signal; each bullet/sentence introduces DISTINCT capability or benefit
+- No internal process explanations, no roadmap/future vision unless explicitly asked
+- Present-tense, confident delivery
+- Prefer bullets over paragraphs; group related capabilities; max 6-8 bullets unless complexity requires more
+- Customer-centric language ("what this does for you"); no hype; no filler intros
+- COMPRESSION RULE: If two sentences communicate similar value, keep the stronger one, remove the other
+- CRITICAL: Always provide a complete, finished answer - never cut off mid-sentence
+
+CRITICAL: REALITY & SCOPE CONSTRAINT - Only include capabilities/services/benefits explicitly in the provided context that exist today. Do NOT invent future features or expand beyond context."""
+                        },
+                        {"role": "user", "content": assembled_prompt + "\n\nIMPORTANT: Ensure your answer is complete and ends with a proper conclusion. Do not cut off mid-sentence."}
+                    ],
+                    temperature=0.7,
+                    max_tokens=1500  # Higher limit for regeneration
+                )
+                answer = response.choices[0].message.content.strip()
+                answer = self._normalize_newlines(answer)
+            
+            return answer
             
         except Exception as e:
             logger.error(f"[MULTI-AGENT] Response generation error: {str(e)}")
@@ -572,7 +693,7 @@ TASK: Apply ONLY the requested fixes to the draft answer:
 - Use exactly 4 spaces for nested list indentation per CommonMark specification
 - Use \n\n only when concluding/leaving a list
 
-ZIX GOLD STANDARD — STYLE & DISCIPLINE (MANDATORY):
+GOLD STANDARD — STYLE & DISCIPLINE (MANDATORY):
 - Concise and high-signal; each bullet/sentence introduces DISTINCT capability or benefit
 - No internal process explanations, no roadmap/future vision unless explicitly asked
 - Present-tense, confident delivery
@@ -585,6 +706,12 @@ CRITICAL: REALITY & SCOPE CONSTRAINT
 - Only include services that exist today
 - Only include benefits that can be delivered immediately
 - Do NOT invent future features or expand beyond context
+
+CRITICAL: COMPLETENESS REQUIREMENT
+- Always provide a complete, finished answer
+- Never cut off mid-sentence or with incomplete phrases
+- End with proper punctuation (., !, ?, :, or ;)
+- Always provide a proper conclusion or closing statement
 
 Generate the fixed answer now:"""
 
@@ -599,7 +726,7 @@ You apply fixes to answers based on validation feedback.
 You ONLY add missing items or remove unsupported items - do NOT introduce new ideas or expand scope.
 Keep answers SHORT and concise.
 
-ZIX GOLD STANDARD — STYLE & DISCIPLINE:
+GOLD STANDARD — STYLE & DISCIPLINE:
 - Concise and high-signal; each bullet/sentence introduces DISTINCT capability or benefit
 - No internal process explanations, no roadmap/future vision unless explicitly asked
 - Present-tense, confident delivery
@@ -610,11 +737,44 @@ ZIX GOLD STANDARD — STYLE & DISCIPLINE:
                     {"role": "user", "content": fix_prompt}
                 ],
                 temperature=0.5,
-                max_tokens=600
+                max_tokens=1200  # Increased to ensure complete answers
             )
             
             fixed_answer = response.choices[0].message.content.strip()
-            return self._normalize_newlines(fixed_answer)
+            fixed_answer = self._normalize_newlines(fixed_answer)
+            
+            # Validate completeness
+            if not self._is_answer_complete(fixed_answer):
+                logger.warning("[MULTI-AGENT] Fixed answer appears incomplete, regenerating...")
+                # Regenerate with higher limit
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": """You are Alex AI, WhipSmart's expert assistant with a professional Australian accent.
+You apply fixes to answers based on validation feedback.
+You ONLY add missing items or remove unsupported items - do NOT introduce new ideas or expand scope.
+Keep answers SHORT and concise.
+CRITICAL: Always provide a complete, finished answer - never cut off mid-sentence.
+
+GOLD STANDARD — STYLE & DISCIPLINE:
+- Concise and high-signal; each bullet/sentence introduces DISTINCT capability or benefit
+- No internal process explanations, no roadmap/future vision unless explicitly asked
+- Present-tense, confident delivery
+- Prefer bullets over paragraphs; group related capabilities; max 6-8 bullets unless complexity requires more
+- Customer-centric language ("what this does for you"); no hype; no filler intros
+- COMPRESSION RULE: If two sentences communicate similar value, keep the stronger one, remove the other"""
+                        },
+                        {"role": "user", "content": fix_prompt + "\n\nIMPORTANT: Ensure your answer is complete and ends with a proper conclusion. Do not cut off mid-sentence."}
+                    ],
+                    temperature=0.5,
+                    max_tokens=1500
+                )
+                fixed_answer = response.choices[0].message.content.strip()
+                fixed_answer = self._normalize_newlines(fixed_answer)
+            
+            return fixed_answer
             
         except Exception as e:
             logger.error(f"[MULTI-AGENT] Error applying fixes: {str(e)}")
@@ -789,4 +949,45 @@ I apologize, but I encountered an issue processing your question. Please try rep
         import re
         # Normalize excessive newlines (3+ consecutive) to \n\n
         return re.sub(r'\n{3,}', '\n\n', text)
+    
+    def _is_answer_complete(self, answer: str) -> bool:
+        """
+        Check if an answer is complete (doesn't end mid-sentence).
+        
+        Returns True if answer appears complete, False if it seems truncated.
+        """
+        if not answer or len(answer.strip()) < 10:
+            return False
+        
+        # Remove trailing whitespace and newlines
+        answer_trimmed = answer.strip()
+        
+        # Check if answer ends with proper punctuation
+        proper_endings = ['.', '!', '?', ':', ';']
+        if answer_trimmed[-1] in proper_endings:
+            return True
+        
+        # Check for incomplete sentence patterns
+        incomplete_patterns = [
+            r'\b(by|with|for|to|in|on|at|from|of|and|or|but|if|when|where|how|what|why|who)\s*$',
+            r'\b(evaluating|considering|reviewing|analyzing|examining|assessing)\s*$',
+            r'\b(that|which|who|whom|whose)\s*$',
+            r'^[A-Z][a-z]+\s*$',  # Single word at end
+        ]
+        
+        import re
+        for pattern in incomplete_patterns:
+            if re.search(pattern, answer_trimmed, re.IGNORECASE):
+                logger.warning(f"[MULTI-AGENT] Answer appears incomplete (pattern: {pattern})")
+                return False
+        
+        # If answer is very short and doesn't end with punctuation, might be incomplete
+        if len(answer_trimmed) < 50 and answer_trimmed[-1] not in proper_endings:
+            return False
+        
+        # If answer ends with a comma or dash, likely incomplete
+        if answer_trimmed[-1] in [',', '-', '—']:
+            return False
+        
+        return True
 
