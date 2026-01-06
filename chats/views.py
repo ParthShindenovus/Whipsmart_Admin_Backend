@@ -230,6 +230,7 @@ class SessionViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
         """
         Override list to handle pagination properly with standardized response format.
         Bypasses StandardizedResponseMixin.list() to avoid double-wrapping.
+        Returns response with 'results' key to match TypeScript interface.
         """
         # Get queryset and paginate
         queryset = self.filter_queryset(self.get_queryset())
@@ -238,12 +239,12 @@ class SessionViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
         if page is not None:
             serializer = self.get_serializer(page, many=True)
             paginated_response = self.get_paginated_response(serializer.data)
-            # Wrap paginated response in standardized format
-            return success_response(paginated_response.data)
+            # Wrap paginated response in standardized format with 'results' key
+            return success_response({'results': paginated_response.data})
         
         # If no pagination, serialize all results
         serializer = self.get_serializer(queryset, many=True)
-        return success_response({'results': serializer.data})
+        return success_response({'results': {'count': len(serializer.data), 'next': None, 'previous': None, 'results': serializer.data, 'page': 1, 'page_size': len(serializer.data), 'total_pages': 1}})
     
     def create(self, request, *args, **kwargs):
         """
@@ -396,6 +397,7 @@ class VisitorViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
         """
         Override list to handle pagination properly with standardized response format.
         Bypasses StandardizedResponseMixin.list() to avoid double-wrapping.
+        Returns response with 'results' key to match TypeScript interface.
         """
         # Get queryset and paginate
         queryset = self.filter_queryset(self.get_queryset())
@@ -404,12 +406,12 @@ class VisitorViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
         if page is not None:
             serializer = self.get_serializer(page, many=True)
             paginated_response = self.get_paginated_response(serializer.data)
-            # Wrap paginated response in standardized format
-            return success_response(paginated_response.data)
+            # Wrap paginated response in standardized format with 'results' key
+            return success_response({'results': paginated_response.data})
         
         # If no pagination, serialize all results
         serializer = self.get_serializer(queryset, many=True)
-        return success_response({'results': serializer.data})
+        return success_response({'results': {'count': len(serializer.data), 'next': None, 'previous': None, 'results': serializer.data, 'page': 1, 'page_size': len(serializer.data), 'total_pages': 1}})
     
     def create(self, request, *args, **kwargs):
         """
