@@ -9,11 +9,49 @@ class VisitorSerializer(serializers.ModelSerializer):
     Serializer for Visitor model.
     
     Visitor IDs are auto-generated UUIDs. No input required from client.
+    Includes name, email, and phone from the visitor's most recent session if available.
     """
+    name = serializers.SerializerMethodField(help_text="Visitor's name from most recent session (if available)")
+    email = serializers.SerializerMethodField(help_text="Visitor's email from most recent session (if available)")
+    phone = serializers.SerializerMethodField(help_text="Visitor's phone number from most recent session (if available)")
+    
     class Meta:
         model = Visitor
-        fields = ['id', 'created_at', 'last_seen_at', 'metadata']
-        read_only_fields = ['id', 'created_at', 'last_seen_at']
+        fields = ['id', 'created_at', 'last_seen_at', 'metadata', 'name', 'email', 'phone']
+        read_only_fields = ['id', 'created_at', 'last_seen_at', 'name', 'email', 'phone']
+    
+    def get_name(self, obj):
+        """Extract name from the visitor's most recent session's conversation_data."""
+        try:
+            # Get the most recent session for this visitor
+            session = obj.sessions.order_by('-created_at').first()
+            if session and session.conversation_data:
+                return session.conversation_data.get('name', None)
+        except Exception:
+            pass
+        return None
+    
+    def get_email(self, obj):
+        """Extract email from the visitor's most recent session's conversation_data."""
+        try:
+            # Get the most recent session for this visitor
+            session = obj.sessions.order_by('-created_at').first()
+            if session and session.conversation_data:
+                return session.conversation_data.get('email', None)
+        except Exception:
+            pass
+        return None
+    
+    def get_phone(self, obj):
+        """Extract phone from the visitor's most recent session's conversation_data."""
+        try:
+            # Get the most recent session for this visitor
+            session = obj.sessions.order_by('-created_at').first()
+            if session and session.conversation_data:
+                return session.conversation_data.get('phone', None)
+        except Exception:
+            pass
+        return None
 
 
 class ChatRequestSerializer(serializers.Serializer):

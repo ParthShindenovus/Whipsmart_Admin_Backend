@@ -230,7 +230,7 @@ class VisitorViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
     
     Provides operations: Create, Read, List, Validate.
     """
-    queryset = Visitor.objects.all()
+    queryset = Visitor.objects.prefetch_related('sessions').all()
     serializer_class = VisitorSerializer
     authentication_classes = []  # No authentication - completely public endpoint
     permission_classes = [AllowAny]  # Visitors are public, no admin required
