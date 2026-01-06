@@ -61,13 +61,19 @@ class VisitorPagination(PageNumberPagination):
         Return a paginated style Response object with additional pagination info.
         """
         from rest_framework.response import Response
+        # Get the actual page size used (from query param or default)
+        actual_page_size = len(data) if data else self.page_size
+        # If we have a full page, use the page_size from paginator
+        if self.page and hasattr(self.page, 'paginator'):
+            actual_page_size = self.page.paginator.per_page
+        
         return Response({
             'count': self.page.paginator.count,
             'next': self.get_next_link(),
             'previous': self.get_previous_link(),
             'results': data,
             'page': self.page.number,
-            'page_size': self.page_size,
+            'page_size': actual_page_size,
             'total_pages': self.page.paginator.num_pages,
         })
 
@@ -86,13 +92,19 @@ class SessionPagination(PageNumberPagination):
         Return a paginated style Response object with additional pagination info.
         """
         from rest_framework.response import Response
+        # Get the actual page size used (from query param or default)
+        actual_page_size = len(data) if data else self.page_size
+        # If we have a full page, use the page_size from paginator
+        if self.page and hasattr(self.page, 'paginator'):
+            actual_page_size = self.page.paginator.per_page
+        
         return Response({
             'count': self.page.paginator.count,
             'next': self.get_next_link(),
             'previous': self.get_previous_link(),
             'results': data,
             'page': self.page.number,
-            'page_size': self.page_size,
+            'page_size': actual_page_size,
             'total_pages': self.page.paginator.num_pages,
         })
 
