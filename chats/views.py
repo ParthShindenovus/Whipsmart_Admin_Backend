@@ -229,28 +229,21 @@ class SessionViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
     def list(self, request, *args, **kwargs):
         """
         Override list to handle pagination properly with standardized response format.
+        Bypasses StandardizedResponseMixin.list() to avoid double-wrapping.
         """
-        # Call parent list method which handles pagination
-        response = super().list(request, *args, **kwargs)
+        # Get queryset and paginate
+        queryset = self.filter_queryset(self.get_queryset())
         
-        if response.status_code == status.HTTP_200_OK:
-            # Check if response is paginated (DRF pagination returns dict with 'results')
-            if isinstance(response.data, dict) and 'results' in response.data:
-                # Paginated response - wrap in standardized format
-                return success_response({
-                    'results': response.data['results'],
-                    'count': response.data.get('count', 0),
-                    'next': response.data.get('next'),
-                    'previous': response.data.get('previous'),
-                    'page': response.data.get('page', 1),
-                    'page_size': response.data.get('page_size', self.pagination_class.page_size),
-                    'total_pages': response.data.get('total_pages', 0),
-                })
-            else:
-                # Non-paginated response (shouldn't happen with pagination_class set, but handle it)
-                return success_response({'results': response.data})
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            paginated_response = self.get_paginated_response(serializer.data)
+            # Wrap paginated response in standardized format
+            return success_response(paginated_response.data)
         
-        return response
+        # If no pagination, serialize all results
+        serializer = self.get_serializer(queryset, many=True)
+        return success_response({'results': serializer.data})
     
     def create(self, request, *args, **kwargs):
         """
@@ -402,27 +395,21 @@ class VisitorViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
     def list(self, request, *args, **kwargs):
         """
         Override list to handle pagination properly with standardized response format.
+        Bypasses StandardizedResponseMixin.list() to avoid double-wrapping.
         """
-        response = super().list(request, *args, **kwargs)
+        # Get queryset and paginate
+        queryset = self.filter_queryset(self.get_queryset())
         
-        if response.status_code == status.HTTP_200_OK:
-            # Check if response is paginated
-            if isinstance(response.data, dict) and 'results' in response.data:
-                # Paginated response - wrap in standardized format
-                return success_response({
-                    'results': response.data['results'],
-                    'count': response.data.get('count', 0),
-                    'next': response.data.get('next'),
-                    'previous': response.data.get('previous'),
-                    'page': response.data.get('page', 1),
-                    'page_size': response.data.get('page_size', self.pagination_class.page_size),
-                    'total_pages': response.data.get('total_pages', 0),
-                })
-            else:
-                # Non-paginated response
-                return success_response({'results': response.data})
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            paginated_response = self.get_paginated_response(serializer.data)
+            # Wrap paginated response in standardized format
+            return success_response(paginated_response.data)
         
-        return response
+        # If no pagination, serialize all results
+        serializer = self.get_serializer(queryset, many=True)
+        return success_response({'results': serializer.data})
     
     def create(self, request, *args, **kwargs):
         """
