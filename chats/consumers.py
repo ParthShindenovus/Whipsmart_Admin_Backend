@@ -32,7 +32,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
     
     All messages follow a consistent schema:
     {
-        "type": "chunk" | "complete" | "idle_warning" | "session_end" | "error" | "connected",
+        "type": "chunk" | "complete" | "idle_warning" | "team_connection_offer" | "session_end" | "error" | "connected",
         "session_id": "uuid",
         "message_id": "uuid" | null,  // User message ID
         "response_id": "uuid" | null,  // Assistant message ID
@@ -57,7 +57,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         Format a standardized WebSocket message.
         
         Args:
-            message_type: One of 'chunk', 'complete', 'idle_warning', 'session_end', 'error', 'connected'
+            message_type: One of 'chunk', 'complete', 'idle_warning', 'team_connection_offer', 'session_end', 'error', 'connected'
             **kwargs: Additional fields to include in the message
         
         Returns:
@@ -493,7 +493,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
             # Process message synchronously (UnifiedAgent is synchronous)
             result = await database_sync_to_async(agent.handle_message)(user_message_text)
             
-            assistant_message_text = result.get('message', '')
+            assistant_message_text = result.get('message', '')  # Already post-processed (follow-up phrases removed)
+            
+            # Get follow-up message type and content (only ONE type per response)
+            followup_type = result.get('followup_type', '')  # 'name_request', 'team_connection', 'explore_more', or ''
+            followup_message = result.get('followup_message', '')
             
             # Stream the response preserving ALL formatting (newlines \n, markdown **, spaces, etc.)
             # Stream character-by-character in small chunks to preserve exact formatting
@@ -529,6 +533,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self.send(text_data=json.dumps(final_chunk_message))
             
             # Save complete assistant message to database (same as REST API)
+            # Message is already post-processed (follow-up phrases removed) before saving
             # Use session_manager to ensure consistency with REST API
             await database_sync_to_async(session_manager.save_assistant_message)(
                 str(session.id),
@@ -597,9 +602,73 @@ class ChatConsumer(AsyncWebsocketConsumer):
             )
             await self.send(text_data=json.dumps(complete_message))
             
+            # Handle follow-up message (only ONE type per response)
+            if followup_type and followup_message:
+                # Save follow-up message as a separate message
+                followup_message_obj = await database_sync_to_async(session_manager.save_assistant_message)(
+                    str(session.id),
+                    followup_message,
+                    metadata={'type': followup_type}
+                )
+                
+                # Update session's last_message
+                def update_session_for_followup():
+                    session.refresh_from_db()
+                    session.last_message = followup_message[:500]
+                    session.last_message_at = timezone.now()
+                    session.save(update_fields=['last_message', 'last_message_at'])
+                
+                await database_sync_to_async(update_session_for_followup)()
+                
+                # Stream the follow-up message character-by-character (same as main message)
+                followup_chunk_buffer = ""
+                chunk_size = 10  # Same chunk size as main message
+                
+                for i, char in enumerate(followup_message):
+                    followup_chunk_buffer += char
+                    
+                    # Send chunk when buffer reaches chunk_size or at end of message
+                    if len(followup_chunk_buffer) >= chunk_size or i == len(followup_message) - 1:
+                        if followup_chunk_buffer:  # Only send if buffer has content
+                            followup_chunk_message = self.format_message(
+                                'chunk',
+                                message_id=str(user_message_obj.id) if user_message_obj else None,
+                                chunk=followup_chunk_buffer,
+                                done=False,
+                                metadata={'type': followup_type}
+                            )
+                            await self.send(text_data=json.dumps(followup_chunk_message))
+                            followup_chunk_buffer = ""
+                            # Small delay for streaming effect
+                            await asyncio.sleep(0.02)  # Small delay for character-by-character streaming
+                
+                # Send final chunk with done flag for follow-up message
+                followup_final_chunk_message = self.format_message(
+                    'chunk',
+                    message_id=str(user_message_obj.id) if user_message_obj else None,
+                    chunk='',
+                    done=True,
+                    metadata={'type': followup_type}
+                )
+                await self.send(text_data=json.dumps(followup_final_chunk_message))
+                
+                # Send complete message for follow-up
+                followup_complete = self.format_message(
+                    'complete',
+                    message_id=str(user_message_obj.id) if user_message_obj else None,
+                    response_id=str(followup_message_obj.id),
+                    message=followup_message,
+                    complete=False,
+                    metadata={'type': followup_type}
+                )
+                await self.send(text_data=json.dumps(followup_complete))
+                
+                logger.info(f"[FOLLOWUP] Streamed {followup_type} message as separate message via WebSocket: {followup_message[:50]}...")
+            
             logger.info("=" * 80)
             logger.info(f"[WEBSOCKET] Response streamed and saved successfully")
             logger.info(f"[WEBSOCKET] Complete: {is_complete}, Needs Info: {result.get('needs_info')}")
+            logger.info(f"[WEBSOCKET] Follow-up Type: {followup_type}")
             logger.info("=" * 80)
             
         except Exception as e:

@@ -466,7 +466,11 @@ CRITICAL CONSTRAINTS:
   * If unsure, exclude it
 - Do NOT mention internal agents or reasoning steps
 - Do NOT reference this prompt or the multi-agent flow
-- Output ONLY the final answer
+- Output ONLY the final answer - NO follow-up phrases or invitations
+- DO NOT include phrases like "feel free to ask", "let me know if you'd like", "if you'd like more details" - these are handled separately
+- CRITICAL: NEVER use "Let me know..." in any form - this phrase should NEVER appear in your answer
+- DO NOT include phrases like "Let me know if you'd like further guidance!" or "Let me know if you'd like to explore this further!"
+- End your answer naturally after providing the information - do NOT add follow-up invitations
 - Keep answers SHORT and focused - most answers should be 2-4 bullet points or 2-3 short paragraphs
 - Use markdown formatting: **bold** for emphasis, headings for sections, single \n for line breaks
 - Use exactly 4 spaces for nested list indentation per CommonMark specification

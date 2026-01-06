@@ -487,8 +487,18 @@ class ChatMessageViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
             # Handle message
             result = agent.handle_message(message)
             
-            # Save assistant message to database
-            session_manager.save_assistant_message(session_id, result['message'])
+            assistant_message_text = result['message']  # Already post-processed (follow-up phrases removed)
+            
+            # Get follow-up message type and content (only ONE type per response)
+            followup_type = result.get('followup_type', '')  # 'name_request', 'team_connection', 'explore_more', or ''
+            followup_message = result.get('followup_message', '')
+            
+            # Save the post-processed assistant message to database (follow-up phrases already removed)
+            session_manager.save_assistant_message(
+                session_id, 
+                assistant_message_text,
+                metadata=result.get('metadata', {})
+            )
             
             # Refresh session to get updated conversation_data and is_active status
             session.refresh_from_db()
@@ -506,14 +516,37 @@ class ChatMessageViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
                 is_deleted=False
             ).order_by('-timestamp').first()
             
+            # Handle follow-up message (only ONE type per response)
+            followup_message_id = None
+            followup_message_text = None
+            
+            if followup_type and followup_message:
+                # Save follow-up message as a separate message
+                followup_message_obj = session_manager.save_assistant_message(
+                    session_id,
+                    followup_message,
+                    metadata={'type': followup_type}
+                )
+                followup_message_id = str(followup_message_obj.id)
+                followup_message_text = followup_message
+                
+                # Update session's last_message
+                session.refresh_from_db()
+                session.last_message = followup_message[:500]
+                session.last_message_at = timezone.now()
+                session.save(update_fields=['last_message', 'last_message_at'])
+                
+                logger.info(f"[FOLLOWUP] Sent {followup_type} message as separate message: {followup_message[:50]}...")
+            
             logger.info("=" * 80)
-            logger.info(f"[RESPONSE] Final Answer ({len(result['message'])} chars)")
+            logger.info(f"[RESPONSE] Final Answer ({len(assistant_message_text)} chars)")
             logger.info(f"[INFO] Complete: {result.get('complete', False)}, Needs Info: {result.get('needs_info')}")
             logger.info(f"[INFO] Session Active: {session.is_active}")
+            logger.info(f"[INFO] Follow-up Type: {followup_type}")
             logger.info("=" * 80)
             
             response_data = {
-                'response': result['message'],
+                'response': assistant_message_text,
                 'session_id': str(session.id),
                 'conversation_data': session.conversation_data,
                 'complete': result.get('complete', False),
@@ -522,7 +555,10 @@ class ChatMessageViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
                 # Expose knowledge base results (includes "source" URLs) for frontend UI
                 'knowledge_results': result.get('knowledge_results', []),
                 'message_id': str(user_message.id) if user_message else None,
-                'response_id': str(assistant_message.id) if assistant_message else None
+                'response_id': str(assistant_message.id) if assistant_message else None,
+                'followup_type': followup_type,
+                'followup_message_id': followup_message_id,
+                'followup_message': followup_message_text
             }
             
             return success_response(response_data)

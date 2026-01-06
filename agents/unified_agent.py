@@ -18,6 +18,7 @@ from agents.agent_prompts import KNOWLEDGE_AGENT_PROMPT
 from agents.multi_agent_reasoning import MultiAgentReasoning
 from openai import AzureOpenAI
 from django.conf import settings
+from service.hubspot_service import create_contact, update_contact, format_phone_number
 
 logger = logging.getLogger(__name__)
 
@@ -246,15 +247,14 @@ class UnifiedAgent:
                 logger.error(f"[RAG] Error fetching context: {str(e)}", exc_info=True)
         
         # Check if we should subtly ask for name (after 3-4 questions without name)
+        # This will be handled separately after answer generation
         should_ask_for_name = self._should_ask_for_name(conversation_history, current_name)
         
-        # Check if we should offer team connection (after 3-4 questions, but separately from name)
-        should_offer_team_connection = self._should_offer_team_connection(conversation_history)
-        
         # Build system prompt (rag_context will be used in two-step process if needed)
+        # Note: Team connection decision will be made AFTER answer generation
         system_prompt = self._build_system_prompt(
             current_name, current_email, current_phone, step, 
-            should_ask_for_name, should_offer_team_connection
+            should_ask_for_name=False  # Don't include in prompt, will be sent separately
         )
         
         # Define all available tools
@@ -295,9 +295,29 @@ class UnifiedAgent:
                 # Add assistant message with tool calls
                 messages.append(message)
                 
-                # Execute all tool calls
+                # Before executing tools, check if end_conversation is being called and we need to ask for name/phone
+                # This prevents the tool from executing if we need to ask first
+                name = self.conversation_data.get('name', '')
+                phone = self.conversation_data.get('phone', '')
+                should_ask_before_end = False
+                
+                # Check if end_conversation is in the tool calls and we need to ask for info first
+                for tool_call in message.tool_calls:
+                    if tool_call.function.name == "end_conversation":
+                        if not name or not phone:
+                            # Don't execute end_conversation yet - we need to ask for name/phone first
+                            should_ask_before_end = True
+                            logger.info("[END_CONVERSATION] Skipping end_conversation tool - need to ask for name/phone first")
+                            break
+                
+                # Execute all tool calls (except end_conversation if we need to ask first)
                 for tool_call in message.tool_calls:
                     function_name = tool_call.function.name
+                    
+                    # Skip end_conversation if we need to ask for name/phone first
+                    if function_name == "end_conversation" and should_ask_before_end:
+                        continue
+                    
                     try:
                         function_args = json.loads(tool_call.function.arguments)
                     except json.JSONDecodeError:
@@ -359,6 +379,170 @@ class UnifiedAgent:
                                 knowledge_results = tool_res.get("results", []) or []
                             break
                 
+                # Check if user is responding to our request for name/phone (after declining team connection or before ending)
+                # This MUST be checked BEFORE end_conversation check
+                if self.conversation_data.get('asking_for_info_after_decline') or self.conversation_data.get('asking_before_end'):
+                    user_lower = user_message.lower().strip()
+                    
+                    # Check if user is asking why we need this information
+                    why_phrases = ['why do you need', 'why do you want', 'why do you ask', 'why need', 'why want', 'why ask', 'what for', 'why']
+                    if any(phrase in user_lower for phrase in why_phrases):
+                        # Explain why we need it and ask again
+                        asking_before_end = self.conversation_data.get('asking_before_end')
+                        if asking_before_end:
+                            return {
+                                'message': "We'd like to stay in touch so we can send you helpful updates about WhipSmart's EV leasing services and novated lease options. Could I get your name and phone number?",
+                                'suggestions': [],
+                                'complete': False,
+                                'needs_info': 'name_phone',
+                                'escalate_to': None,
+                                'knowledge_results': knowledge_results,
+                                'metadata': {'knowledge_results': knowledge_results}
+                            }
+                        else:
+                            return {
+                                'message': "We'd like to stay in touch so we can send you helpful updates about WhipSmart's EV leasing services. Could I get your name and phone number?",
+                                'suggestions': [],
+                                'complete': False,
+                                'needs_info': 'name_phone',
+                                'escalate_to': None,
+                                'knowledge_results': knowledge_results,
+                                'metadata': {'knowledge_results': knowledge_results}
+                            }
+                    
+                    # Check if user is declining to share information
+                    # Only match if it's a clear decline (short response, not part of a longer message)
+                    # Use regex to match whole words/phrases, not parts of words
+                    import re
+                    is_decline = False
+                    
+                    # Single word declines (exact match)
+                    if user_lower in ['no', 'nope', 'nah']:
+                        is_decline = True
+                    # Short phrases that are clear declines (3 words or less)
+                    elif len(user_lower.split()) <= 3:
+                        decline_patterns = [
+                            r'^no\s+thanks',
+                            r'^no\s+thank\s+you',
+                            r"^don'?t\s+want",
+                            r"^don'?t\s+need",
+                            r'^won\'?t\s+share',
+                            r'^can\'?t\s+share',
+                            r'^prefer\s+not',
+                            r'^i\s+don\'?t\s+want',
+                            r'^i\s+don\'?t\s+need',
+                            r'^not\s+interested'
+                        ]
+                        for pattern in decline_patterns:
+                            if re.match(pattern, user_lower):
+                                is_decline = True
+                                break
+                    
+                    if is_decline:
+                        # User declined to share - acknowledge and end
+                        self.conversation_data.pop('asking_for_info_after_decline', None)
+                        asking_before_end = self.conversation_data.pop('asking_before_end', None)
+                        self._save_conversation_data()
+                        
+                        if asking_before_end:
+                            # Was asking before ending - end the conversation
+                            self.conversation_data['step'] = 'complete'
+                            self.session.is_active = False
+                            self._save_conversation_data()
+                            self.session.save(update_fields=['is_active', 'conversation_data'])
+                            
+                            return {
+                                'message': "No worries at all! Thanks for chatting with WhipSmart. If you have any more questions, feel free to reach out. Have a great day!",
+                                'suggestions': [],
+                                'complete': True,
+                                'needs_info': None,
+                                'escalate_to': None
+                            }
+                        else:
+                            # After declining team connection - continue conversation
+                            assistant_message = "No worries! Is there anything else you'd like to know about WhipSmart?"
+                    
+                    # Try to extract name and phone from user message
+                    collect_result = self._tool_collect_user_info({"name": user_message, "phone": user_message})
+                    name = self.conversation_data.get('name', '')
+                    phone = self.conversation_data.get('phone', '')
+                    
+                    asking_before_end = self.conversation_data.get('asking_before_end')
+                    asking_after_decline = self.conversation_data.get('asking_for_info_after_decline')
+                    
+                    if name and phone:
+                        # Got both name and phone - acknowledge and end if before ending, otherwise continue
+                        self.conversation_data.pop('asking_for_info_after_decline', None)
+                        self.conversation_data.pop('asking_before_end', None)
+                        self._save_conversation_data()
+                        first_name = name.split()[0] if name else ''
+                        
+                        if asking_before_end:
+                            # Was asking before ending - end the conversation
+                            self.conversation_data['step'] = 'complete'
+                            self.session.is_active = False
+                            self._save_conversation_data()
+                            self.session.save(update_fields=['is_active', 'conversation_data'])
+                            
+                            return {
+                                'message': f"Thanks {first_name}! I've got your details. Our team will be in touch. Have a great day!",
+                                'suggestions': [],
+                                'complete': True,
+                                'needs_info': None,
+                                'escalate_to': None
+                            }
+                        else:
+                            # After declining team connection - continue conversation
+                            assistant_message = f"Thanks {first_name}! I've got your details. {assistant_message if assistant_message else 'Is there anything else you\'d like to know about WhipSmart?'}"
+                    elif name or phone:
+                        # Got partial info (only name or only phone) - store what we have, thank them, and end if before ending
+                        self.conversation_data.pop('asking_for_info_after_decline', None)
+                        self.conversation_data.pop('asking_before_end', None)
+                        self._save_conversation_data()
+                        
+                        if asking_before_end:
+                            # Was asking before ending - end the conversation with what we have
+                            self.conversation_data['step'] = 'complete'
+                            self.session.is_active = False
+                            self._save_conversation_data()
+                            self.session.save(update_fields=['is_active', 'conversation_data'])
+                            
+                            first_name = name.split()[0] if name else ''
+                            thank_msg = f"Thanks {first_name}! " if first_name else "Thanks! "
+                            return {
+                                'message': f"{thank_msg}I've got your details. Our team will be in touch. Have a great day!",
+                                'suggestions': [],
+                                'complete': True,
+                                'needs_info': None,
+                                'escalate_to': None
+                            }
+                        else:
+                            # After declining team connection - continue conversation
+                            assistant_message = f"Thanks! I've got that. {assistant_message if assistant_message else 'Is there anything else you\'d like to know about WhipSmart?'}"
+                    else:
+                        # Didn't get any info - acknowledge and end if before ending, otherwise continue
+                        self.conversation_data.pop('asking_for_info_after_decline', None)
+                        asking_before_end = self.conversation_data.pop('asking_before_end', None)
+                        self._save_conversation_data()
+                        
+                        if asking_before_end:
+                            # Was asking before ending - end the conversation anyway
+                            self.conversation_data['step'] = 'complete'
+                            self.session.is_active = False
+                            self._save_conversation_data()
+                            self.session.save(update_fields=['is_active', 'conversation_data'])
+                            
+                            return {
+                                'message': "Thanks for chatting with WhipSmart! If you have any more questions, feel free to reach out. Have a great day!",
+                                'suggestions': [],
+                                'complete': True,
+                                'needs_info': None,
+                                'escalate_to': None
+                            }
+                        else:
+                            # After declining team connection - continue conversation
+                            assistant_message = assistant_message or "No worries! Is there anything else you'd like to know about WhipSmart?"
+                
                 # Check if lead was submitted
                 if "submit_lead" in function_names:
                     for result in tool_results:
@@ -377,26 +561,177 @@ class UnifiedAgent:
                             }
                 
                 # Check if conversation was ended
-                if "end_conversation" in function_names:
-                    self.conversation_data['step'] = 'complete'
-                    self.session.is_active = False
-                    self._save_conversation_data()
-                    self.session.save(update_fields=['is_active', 'conversation_data'])
+                # Note: If we skipped end_conversation tool execution above (should_ask_before_end), 
+                # it won't be in function_names, so we check the original tool calls
+                end_conversation_called = "end_conversation" in function_names
+                if not end_conversation_called:
+                    # Check if end_conversation was requested but we skipped it
+                    for tool_call in message.tool_calls:
+                        if tool_call.function.name == "end_conversation":
+                            end_conversation_called = True
+                            break
+                
+                if end_conversation_called:
+                    # If we skipped end_conversation because we need to ask for name/phone first
+                    if should_ask_before_end:
+                        # Ask for name and phone before ending
+                        self.conversation_data['asking_before_end'] = True
+                        self._save_conversation_data()
+                        
+                        return {
+                            'message': "Before we wrap up, could I get your name and phone number so we can stay in touch?",
+                            'suggestions': [],
+                            'complete': False,
+                            'needs_info': 'name_phone',
+                            'escalate_to': None,
+                            'knowledge_results': knowledge_results,
+                            'metadata': {'knowledge_results': knowledge_results}
+                        }
                     
-                    return {
-                        'message': assistant_message,
-                        'suggestions': [],
-                        'complete': True,
-                        'needs_info': None,
-                        'escalate_to': None
-                    }
+                    # If end_conversation tool was executed, proceed with ending
+                    if "end_conversation" in function_names:
+                        self.conversation_data['step'] = 'complete'
+                        self.session.is_active = False
+                        self._save_conversation_data()
+                        self.session.save(update_fields=['is_active', 'conversation_data'])
+                        
+                        return {
+                            'message': assistant_message,
+                            'suggestions': [],
+                            'complete': True,
+                            'needs_info': None,
+                            'escalate_to': None
+                        }
+                
+                # Check if user said "no" to team connection - ask for name and phone
+                # IMPORTANT: Skip this check if:
+                # 1. We're already asking for info
+                # 2. We're actively collecting information (step is name/email/phone)
+                # 3. User is providing information (collect_user_info tool was called)
+                # This prevents false positives when user provides their name (e.g., "nick norrr" being detected as "no")
+                # Get needs_info early to check if we're collecting information
+                current_needs_info = self._get_needs_info()
+                if (not self.conversation_data.get('asking_for_info_after_decline') and 
+                    not self.conversation_data.get('asking_before_end') and
+                    step not in ['name', 'email', 'phone'] and
+                    current_needs_info not in ['name', 'email', 'phone'] and
+                    "collect_user_info" not in function_names):
+                    user_lower = user_message.lower().strip()
+                    
+                    # More precise decline detection - only match whole words/phrases, not parts of words
+                    # Check if message is a clear decline (short response with decline keywords as whole words)
+                    import re
+                    is_decline = False
+                    
+                    # Single word declines (exact match only - prevents matching "no" in "nick" or "norrr")
+                    if user_lower == 'no' or user_lower == 'nope' or user_lower == 'nah':
+                        is_decline = True
+                    # Short phrases that start with decline words (3 words or less)
+                    # Use word boundary to ensure "no" is a whole word, not part of another word
+                    elif len(user_lower.split()) <= 3:
+                        decline_patterns = [
+                            r'^no\s+thanks',
+                            r'^no\s+thank\s+you',
+                            r'^not\s+interested',
+                            r"^don'?t\s+want",
+                            r"^don'?t\s+need",
+                            r'^not\s+right\s+now',
+                            r'^maybe\s+later'
+                        ]
+                        for pattern in decline_patterns:
+                            if re.match(pattern, user_lower):
+                                is_decline = True
+                                break
+                    
+                    if is_decline:
+                        conversation_history = self._get_conversation_history(limit=2)
+                        if conversation_history:
+                            # Check last assistant message
+                            last_assistant_msg = None
+                            for msg in reversed(conversation_history):
+                                if msg.get('role') == 'assistant':
+                                    last_assistant_msg = msg.get('content', '').lower()
+                                    break
+                            
+                            if last_assistant_msg:
+                                # Check if last message was asking to connect with team
+                                team_connection_phrases = [
+                                    'connect with our team',
+                                    'connect with the team',
+                                    'connect you with',
+                                    'would you like to connect',
+                                    'connect with team',
+                                    'connect with our sales team'
+                                ]
+                                if any(phrase in last_assistant_msg for phrase in team_connection_phrases):
+                                    # User declined team connection - ask for name and phone
+                                    name = self.conversation_data.get('name', '')
+                                    phone = self.conversation_data.get('phone', '')
+                                    
+                                    if not name or not phone:
+                                        # Ask for name and phone
+                                        self.conversation_data['asking_for_info_after_decline'] = True
+                                        self._save_conversation_data()
+                                        return {
+                                            'message': "No worries! Before we continue, could I get your name and phone number so we can stay in touch?",
+                                            'suggestions': [],
+                                            'complete': False,
+                                            'needs_info': 'name_phone',
+                                            'escalate_to': None,
+                                            'knowledge_results': knowledge_results,
+                                            'metadata': {'knowledge_results': knowledge_results}
+                                        }
                 
                 # Determine what info is still needed
                 needs_info = self._get_needs_info()
                 
+                # CRITICAL: If all details are collected (name, email, phone) and step is 'confirmation',
+                # force proper acknowledgment instead of generic response
+                name = self.conversation_data.get('name', '')
+                email = self.conversation_data.get('email', '')
+                phone = self.conversation_data.get('phone', '')
+                current_step = self.conversation_data.get('step', '')
+                
+                if name and email and phone and current_step == 'confirmation' and "collect_user_info" in function_names:
+                    # Check if this was the final collection (all fields now present)
+                    # Force proper acknowledgment
+                    first_name = name.split()[0] if name else ""
+                    proper_acknowledgment = f"Perfect{', ' + first_name if first_name else ''}! I've got all your details sorted. I'll submit them to our team and they'll contact you shortly. While you're here, is there anything else you'd like to know about WhipSmart's EV leasing services, novated leases, or how we can help you?"
+                    
+                    # Only override if LLM didn't provide proper acknowledgment
+                    acknowledgment_phrases = [
+                        "all your details", "submit them to our team", "they'll contact you", 
+                        "team will contact", "submitted to our team", "contact you shortly"
+                    ]
+                    has_proper_acknowledgment = any(phrase in assistant_message.lower() for phrase in acknowledgment_phrases)
+                    
+                    if not has_proper_acknowledgment:
+                        logger.info("[ACKNOWLEDGMENT] Forcing proper acknowledgment - LLM response didn't include team contact info")
+                        assistant_message = proper_acknowledgment
+                    else:
+                        logger.info("[ACKNOWLEDGMENT] LLM response already includes proper acknowledgment")
+                
                 # Generate suggestions based on context
                 primary_function = function_names[0] if function_names else None
                 suggestions = self._generate_suggestions(assistant_message, user_message, primary_function)
+                
+                # Remove any follow-up phrases that LLM might have included
+                assistant_message = self._remove_followup_phrases(assistant_message)
+                
+                # Check if we should skip post-processing (information collection flow)
+                should_skip_post_processing = self._should_skip_post_processing(
+                    user_message, function_names, step, needs_info, assistant_message
+                )
+                
+                # Post-processing: Analyze answer and decide which ONE follow-up message to send (non-blocking)
+                # SKIP if we're in information collection mode or user just agreed to connect
+                if should_skip_post_processing:
+                    followup_type, followup_message = "", ""
+                    logger.info("[POST-PROCESS] Skipping post-processing - in information collection flow")
+                else:
+                    followup_type, followup_message = self._analyze_and_generate_followup_message(
+                        assistant_message, user_message, conversation_history, should_ask_for_name, current_name
+                    )
                 
                 return {
                     'message': assistant_message,
@@ -410,16 +745,37 @@ class UnifiedAgent:
                     'metadata': {
                         'knowledge_results': knowledge_results,
                     },
+                    'followup_type': followup_type,  # 'ask_name', 'ask_to_connect', 'follow_up', or ''
+                    'followup_message': followup_message,
                 }
             else:
                 # LLM responded directly without calling tools
                 assistant_message = message.content.strip() if message.content else "I'm here to help! How can I assist you today?"
                 # Normalize newlines: replace multiple newlines with single newline (frontend converts \n to <br>)
                 assistant_message = self._normalize_newlines(assistant_message)
+                # Remove any follow-up phrases that LLM might have included
+                assistant_message = self._remove_followup_phrases(assistant_message)
                 needs_info = self._get_needs_info()
                 
                 # Generate suggestions based on context
                 suggestions = self._generate_suggestions(assistant_message, user_message, None)
+                
+                # Check if we should skip post-processing (information collection flow)
+                should_skip_post_processing = self._should_skip_post_processing(
+                    user_message, [], step, needs_info, assistant_message
+                )
+                
+                # Post-processing: Analyze answer and decide which ONE follow-up message to send (non-blocking)
+                # SKIP if we're in information collection mode or user just agreed to connect
+                if should_skip_post_processing:
+                    followup_type, followup_message = "", ""
+                    logger.info("[POST-PROCESS] Skipping post-processing - in information collection flow")
+                else:
+                    # Get extended conversation history (6-7 messages) for post-processing context
+                    extended_history = self._get_conversation_history(limit=7)
+                    followup_type, followup_message = self._analyze_and_generate_followup_message(
+                        assistant_message, user_message, extended_history, should_ask_for_name, current_name
+                    )
                 
                 return {
                     'message': assistant_message,
@@ -431,6 +787,8 @@ class UnifiedAgent:
                     'metadata': {
                         'knowledge_results': [],
                     },
+                    'followup_type': followup_type,  # 'ask_name', 'ask_to_connect', 'follow_up', or ''
+                    'followup_message': followup_message,
                 }
                 
         except Exception as e:
@@ -504,11 +862,11 @@ class UnifiedAgent:
             user_message_count = sum(1 for msg in conversation_history if msg.get('role') == 'user')
             return 2 <= user_message_count <= 3
     
-    def _should_offer_team_connection(self, conversation_history: list) -> bool:
+    def _should_offer_team_connection_auto(self, conversation_history: list) -> bool:
         """
-        Check if we should offer team connection.
+        Automatically determine if we should offer team connection.
         Returns True if user has asked 3-4 questions.
-        This ensures we don't offer team connection at the start.
+        This is handled automatically by the system, not by LLM tool calls.
         """
         # Count ALL user messages in the session (not just limited history)
         from chats.models import ChatMessage
@@ -524,7 +882,7 @@ class UnifiedAgent:
             should_offer = 3 <= total_user_messages <= 4
             
             if should_offer:
-                logger.info(f"[TEAM CONNECTION] Should offer team connection: {total_user_messages} user messages found")
+                logger.info(f"[TEAM CONNECTION] Auto-offering team connection: {total_user_messages} user messages found")
             
             return should_offer
         except Exception as e:
@@ -549,10 +907,13 @@ class UnifiedAgent:
         Optimized for speed (5-6 seconds max).
         """
         try:
-            # Get current state for name/team connection checks
+            # Get current state for name checks and step
             current_name = self.conversation_data.get('name', '')
+            step = self.conversation_data.get('step', 'chatting')
             should_ask_for_name = self._should_ask_for_name(conversation_history, current_name)
-            should_offer_team_connection = self._should_offer_team_connection(conversation_history)
+            
+            # Automatically determine if we should offer team connection (after 3-4 questions)
+            should_offer_team_connection = self._should_offer_team_connection_auto(conversation_history)
             
             # Use Multi-Agent Reasoning System
             multi_agent = MultiAgentReasoning(client, model)
@@ -567,57 +928,33 @@ class UnifiedAgent:
             # Normalize newlines
             assistant_message = self._normalize_newlines(assistant_message)
             
-            # Add name collection or team connection request if needed (using follow-up LLM call for natural integration)
-            if (should_ask_for_name and not current_name) or (should_offer_team_connection and not should_ask_for_name):
-                try:
-                    enhancement_prompt = f"""You are Alex AI, WhipSmart's assistant. You just provided this answer to a user's question:
-
-{assistant_message}
-
-"""
-                    if should_ask_for_name and not current_name:
-                        enhancement_prompt += """CRITICAL: The user has asked 2-3 questions but hasn't provided their name yet. You MUST naturally ask for their name at the end of your response. Examples:
-- "By the way, I'd love to know your name so I can personalize our conversation! What should I call you?"
-- "I'd like to address you properly - may I know your name?"
-Make it feel natural and conversational."""
-                    
-                    if should_offer_team_connection and not should_ask_for_name:
-                        enhancement_prompt += """CRITICAL: The user has asked 3-4 questions. You MUST offer to connect them with our team at the end of your response. Examples:
-- "Would you like to connect with our team to explore how a novated lease could work for you? They can provide more personalised assistance!"
-- "I can connect you with our team to get personalized assistance. Would you like me to do that?"
-Make it natural and helpful."""
-                    
-                    enhancement_prompt += "\n\nTask: Return ONLY the enhanced answer that includes your original answer PLUS the name request or team connection offer at the end. Keep it natural and flowing."
-                    
-                    enhancement_response = client.chat.completions.create(
-                        model=model,
-                        messages=[
-                            {
-                                "role": "system",
-                                "content": "You are Alex AI, WhipSmart's assistant. You enhance answers by naturally adding name requests or team connection offers."
-                            },
-                            {"role": "user", "content": enhancement_prompt}
-                        ],
-                        temperature=0.7,
-                        max_tokens=800
-                    )
-                    
-                    enhanced_message = enhancement_response.choices[0].message.content.strip()
-                    assistant_message = self._normalize_newlines(enhanced_message)
-                    logger.info("[MULTI-AGENT] Enhanced answer with name/team connection request")
-                except Exception as e:
-                    logger.error(f"[MULTI-AGENT] Error enhancing answer: {str(e)}")
-                    # Fallback: append directly
-                    if should_ask_for_name and not current_name:
-                        assistant_message += "\n\nBy the way, I'd love to know your name so I can personalize our conversation! What should I call you?"
-                    if should_offer_team_connection and not should_ask_for_name:
-                        assistant_message += "\n\nWould you like to connect with our team to explore how a novated lease could work for you? They can provide more personalised assistance!"
+            # Note: Name asking will be handled separately after answer generation
             
             # Generate suggestions
             needs_info = self._get_needs_info()
             suggestions = self._generate_suggestions(assistant_message, user_message, "search_knowledge_base")
             
             logger.info("[MULTI-AGENT] Completed multi-agent answer generation")
+            
+            # Remove any follow-up phrases that LLM might have included
+            assistant_message = self._remove_followup_phrases(assistant_message)
+            
+            # Check if we should skip post-processing (information collection flow)
+            should_skip_post_processing = self._should_skip_post_processing(
+                user_message, [], step, needs_info, assistant_message
+            )
+            
+            # Post-processing: Analyze answer and decide which ONE follow-up message to send (non-blocking)
+            # SKIP if we're in information collection mode or user just agreed to connect
+            if should_skip_post_processing:
+                followup_type, followup_message = "", ""
+                logger.info("[POST-PROCESS] Skipping post-processing - in information collection flow")
+            else:
+                # Get extended conversation history (6-7 messages) for post-processing context
+                extended_history = self._get_conversation_history(limit=7)
+                followup_type, followup_message = self._analyze_and_generate_followup_message(
+                    assistant_message, user_message, extended_history, should_ask_for_name, current_name
+                )
             
             return {
                 'message': assistant_message,
@@ -629,6 +966,8 @@ Make it natural and helpful."""
                 'metadata': {
                     'knowledge_results': knowledge_results,
                 },
+                'followup_type': followup_type,  # 'ask_name', 'ask_to_connect', 'follow_up', or ''
+                'followup_message': followup_message,
             }
             
         except Exception as e:
@@ -667,6 +1006,7 @@ CRITICAL: This is an informational answer - apply Answer Quality Layer:
   * If unsure, exclude it
 - Ensure the answer fully stands on its own without requiring follow-up
 - Ensure answer would be acceptable to an enterprise client
+- CRITICAL: NEVER include follow-up phrases like "Let me know if you'd like..." or "Let me know if you'd like further guidance!" - just end with the information provided
 
 Provide your analysis in this format:
 UNDERSTANDING: [What is the user really asking? What type of question is this - exploratory, operational, or decision-making?]
@@ -900,9 +1240,34 @@ Remember:
                     assistant_message = final_response.choices[0].message.content.strip()
                     assistant_message = self._normalize_newlines(assistant_message)
                 
+                # Remove any follow-up phrases that LLM might have included
+                assistant_message = self._remove_followup_phrases(assistant_message)
+                
                 # Generate suggestions
                 needs_info = self._get_needs_info()
                 suggestions = self._generate_suggestions(assistant_message, user_message, "search_knowledge_base")
+                
+                # Get current state for name checks and step
+                current_name = self.conversation_data.get('name', '')
+                step = self.conversation_data.get('step', 'chatting')
+                should_ask_for_name = self._should_ask_for_name(conversation_history, current_name)
+                
+                # Check if we should skip post-processing (information collection flow)
+                should_skip_post_processing = self._should_skip_post_processing(
+                    user_message, [], step, needs_info, assistant_message
+                )
+                
+                # Post-processing: Analyze answer and decide which ONE follow-up message to send (non-blocking)
+                # SKIP if we're in information collection mode or user just agreed to connect
+                if should_skip_post_processing:
+                    followup_type, followup_message = "", ""
+                    logger.info("[POST-PROCESS] Skipping post-processing - in information collection flow")
+                else:
+                    # Get extended conversation history (6-7 messages) for post-processing context
+                    extended_history = self._get_conversation_history(limit=7)
+                    followup_type, followup_message = self._analyze_and_generate_followup_message(
+                        assistant_message, user_message, extended_history, should_ask_for_name, current_name
+                    )
                 
                 logger.info("[TWO-STEP] Completed two-step answer generation")
                 
@@ -916,6 +1281,8 @@ Remember:
                     'metadata': {
                         'knowledge_results': knowledge_results,
                     },
+                    'followup_type': followup_type,  # 'ask_name', 'ask_to_connect', 'follow_up', or ''
+                    'followup_message': followup_message,
                 }
             except Exception as e2:
                 logger.error(f"Error in fallback two-step process: {str(e2)}", exc_info=True)
@@ -947,6 +1314,7 @@ CRITICAL: This is an informational answer - apply Answer Quality Layer (non-disr
   * If unsure, exclude it
 - Ensure the answer fully stands on its own without requiring follow-up
 - Ensure answer would be acceptable to an enterprise client
+- CRITICAL: NEVER include follow-up phrases like "Let me know if you'd like..." or "Let me know if you'd like further guidance!" - just end with the information provided
 
 CRITICAL: USE POSITIVE, RESPECTFUL LANGUAGE
 - NEVER use negative or rude language (e.g., "if you can't afford", "if you don't have", "if you're unable to")
@@ -1127,7 +1495,7 @@ So, whether you're after a new car or a lease, we're here to help!"""
         # Last resort: use improved analysis as-is (first paragraph)
         return improved_analysis.split("\n\n")[0] if "\n\n" in improved_analysis else improved_analysis[:500]
     
-    def _build_system_prompt(self, name: str, email: str, phone: str, step: str, should_ask_for_name: bool = False, should_offer_team_connection: bool = False, rag_context: Optional[list] = None) -> str:
+    def _build_system_prompt(self, name: str, email: str, phone: str, step: str, should_ask_for_name: bool = False, rag_context: Optional[list] = None) -> str:
         """Build system prompt based on current state."""
         prompt = """You are Alex AI, WhipSmart's Unified Assistant with a warm, friendly, professional Australian accent. Your PRIMARY GOAL is to help users understand WhipSmart's services AND convert them to connect with our team.
 
@@ -1141,15 +1509,9 @@ CRITICAL: You MUST speak with a professional Australian accent throughout all in
 MAIN GOAL: Understand user's intent, answer their questions, and CONVERT users to connect with our team.
 
 CONVERSION STRATEGY:
-- DO NOT offer team connection at the start of the conversation (first 2 questions)
-- After the user has asked 3-4 questions, you can PROACTIVELY offer to connect them with our team
-- When user shows interest (asks about pricing, benefits, getting started, etc.) AFTER 3-4 questions, offer team connection
-- Use phrases like:
-  * "Would you like to connect with our team to explore how a novated lease could work for you? They can provide more personalised assistance!"
-  * "I can connect you with our team to get personalized assistance. Would you like me to do that?"
-  * "Are you interested in learning more? We can connect you with our team."
-- Make it natural and helpful, not pushy
-- IMPORTANT: Do NOT ask for name and offer team connection in the same message - keep them separate
+- Focus on answering user questions clearly and helpfully
+- The system will automatically offer team connection when appropriate (after 3-4 questions)
+- Do NOT include team connection phrases in your responses - the system handles this separately
 
 CRITICAL: UNDERSTAND USER INTENT AND ASK CLARIFYING QUESTIONS
 - ALWAYS read the conversation history (last 3-4 messages) to understand what the user is asking
@@ -1175,12 +1537,23 @@ CURRENT STATE:
 - Phone: {phone}
 - Step: {step}
 
+CRITICAL: WHEN ALL DETAILS ARE COLLECTED (Step is 'confirmation'):
+- If Name, Email, and Phone are all provided AND step is 'confirmation':
+  - Acknowledge that you've collected all their details
+  - Inform them that their details will be submitted to the team
+  - Let them know the team will contact them shortly
+  - Ask if they need any help or want to ask anything else
+  - Example response: "Perfect! I've got all your details sorted. I'll submit them to our team and they'll contact you shortly. Is there anything else you'd like to know, or are you all set?"
+  - Do NOT just say "How can I assist you further?" - properly acknowledge the collection and team contact
+  - Make it clear that their details are being submitted for team connection
+
 CRITICAL: USING STORED INFORMATION:
-- If Name is provided (not "Not provided"), ALWAYS use it when addressing the user (e.g., "Thanks, {name}!" or "{name}, here's what I found...")
-- If Name is provided, NEVER ask for the user's name again - you already have it
-- If Email is provided (not "Not provided"), NEVER ask for email again - you already have it
-- If Phone is provided (not "Not provided"), NEVER ask for phone again - you already have it
-- ALWAYS check the CURRENT STATE before asking for any information - if it's already stored, use it and don't ask again
+- If Name is provided (not "Not provided"), ALWAYS use it when addressing the user naturally (e.g., "Thanks, {name}!" or "{name}, here's what I found...")
+- If Name is provided, NEVER ask for the user's name again - just use it naturally without mentioning that you already have it
+- If Email is provided (not "Not provided"), NEVER ask for email again - just use it if needed
+- If Phone is provided (not "Not provided"), NEVER ask for phone again - just use it if needed
+- CRITICAL: Do NOT say things like "Since I already have your name", "I already have your details", "no need to ask again", "there's no need to ask again" - keep responses simple and formal
+- ALWAYS check the CURRENT STATE before asking for any information - if it's already stored, use it naturally without acknowledging that you have it
 - When user provides their name naturally in conversation (e.g., "I'm Pat" or "My name is Pat" or just "Pat"), IMMEDIATELY use the collect_user_info tool to extract and store it
 - When user provides email or phone naturally, IMMEDIATELY use the collect_user_info tool to extract and store it
 - If user says their name is something different from what's stored, use update_user_info tool to update it
@@ -1191,16 +1564,26 @@ YOUR CAPABILITIES:
 3. Collect user information when they want to connect with our team
 4. Ask clarifying questions when user intent is unclear
 5. End conversation gracefully when user is done
-6. Offer team connection after 3-4 questions (not at the start)
 
-WHEN TO OFFER TEAM CONNECTION:
-- ONLY after the user has asked 3-4 questions (NOT at the start)
-- After answering questions about pricing, benefits, or services (but only after 3-4 questions)
-- When user asks about getting started, application process, or next steps (but only after 3-4 questions)
-- When user shows interest (keywords: interested, want to, explore, learn more, etc.) (but only after 3-4 questions)
-- After providing information - offer: "Would you like to connect with our team to explore how a novated lease could work for you? They can provide more personalised assistance!"
-- IMPORTANT: Do NOT offer team connection in the first 2 questions - wait until after 3-4 questions
-- IMPORTANT: Do NOT ask for name and offer team connection together - keep them separate
+CRITICAL: ANSWER CONTENT ONLY - NO FOLLOW-UP PHRASES:
+- Your answer should ONLY contain the actual answer to the user's question
+- DO NOT include ANY follow-up phrases or invitations in your answer such as:
+  * "If you'd like more details about how [topic] could work for you, feel free to ask!"
+  * "Let me know if you'd like to explore this further!"
+  * "Let me know if you'd like more details!"
+  * "Let me know if you'd like further guidance!"
+  * "Let me know..." (ANY variation - NEVER use this phrase)
+  * "Would you like to connect with our team..."
+  * "Feel free to ask if you'd like..."
+  * "If you have any questions..."
+  * "If you need more information..."
+  * "If you're interested..."
+  * Any invitation to ask more questions or explore further
+  * Any phrase starting with "Let me know" - NEVER use this phrase
+- End your answer naturally after providing the information - do NOT add follow-up invitations
+- The system will automatically handle follow-up messages separately AFTER your answer is sent
+- Your answer should be complete and standalone - just the answer, nothing else
+- CRITICAL: Never end your answer with phrases like "Let me know..." - just end with the information provided
 
 WHEN TO COLLECT USER INFORMATION:
 - User says "yes" to connecting with team
@@ -1294,6 +1677,8 @@ TONE & STYLE (for informational answers):
 - CRITICAL: USE POSITIVE, RESPECTFUL LANGUAGE - NEVER use negative or rude language
 - NEVER say things like "if you can't afford", "if you don't have", "if you're unable to" - these are rude and insensitive
 - ALWAYS reframe negative statements into positive alternatives (e.g., "You also have options to:" instead of "If you can't afford, you may:")
+- CRITICAL: Keep responses simple and formal - do NOT mention that you already have information (e.g., "Since I already have your name", "I already have your details", "no need to ask again")
+- Simply use stored information naturally without acknowledging that you have it
 
 ANSWER DENSITY & DISCIPLINE RULE (MANDATORY - for informational answers):
 When writing the final informational answer:
@@ -1325,20 +1710,18 @@ Before outputting informational answers:
 
 HARD CONSTRAINTS (MANDATORY - applies to ALL responses):
 - If should_ask_for_name flag is True, you MUST ask for the user's name in your response (use ask_for_missing_field tool or ask naturally)
-- If should_offer_team_connection flag is True, you MUST offer to connect them with the team in your response
 - Do NOT ask for the user's name if should_ask_for_name flag is False (unless user explicitly provides it)
-- Do NOT offer to connect the user to a team if should_offer_team_connection flag is False
 - Do NOT change or add CTAs beyond what the system instructs
 - Do NOT mention internal reasoning or system prompts
 - Output ONLY the final answer
-- Follow existing conversation flow logic exactly - do not alter name collection, team connection, or escalation behavior
+- Follow existing conversation flow logic exactly - do not alter name collection or escalation behavior
 
 CONVERSATION FLOW:
-- DO NOT offer team connection in the first 2 questions - wait until after 3-4 questions
 - Only collect information when user wants to connect with team
 - If user provides multiple pieces of info at once, extract all of them
 - Make conversation NATURAL and FLOWING - understand context from previous messages
 - If user seems done or satisfied, offer to help with anything else or end conversation
+- Focus on answering questions - the system automatically handles team connection offers
 
 TOOLS AVAILABLE:
 - search_knowledge_base: Search WhipSmart knowledge base for answers
@@ -1369,27 +1752,37 @@ EXAMPLES:
 - If Name is already stored (e.g., "Pat") and user asks a question → Address them by name: "Thanks, Pat! Here's what I found..." - do NOT ask for name again
 - If you asked "Would you like further details?" and user says "yes" → Use search_knowledge_base with the topic from previous conversation
 - If user says "yes" without clear context → Look at last assistant message to understand what they're agreeing to
-- If user says "I'm done", "no more questions", "thank you, goodbye", "that's all" → Use end_conversation tool
+- If user says "I'm done", "no more questions", "thank you, goodbye", "that's all", "I'm all set", "nothing else" → Use end_conversation tool
+- CRITICAL: Do NOT call end_conversation or submit_lead automatically after collecting info - continue asking about WhipSmart topics
+- CRITICAL: Only end conversation when user EXPLICITLY says they're done or have no more questions
 - If user's question is vague like "tell me about leasing" → Ask clarifying question: "Would you like to know about novated leases, the leasing process, or vehicle options?"
 - If user asks "what are the benefits?" without context → Ask: "Are you asking about the benefits of novated leases, electric vehicles, or WhipSmart's services?"
-- After answering a question (ONLY after 3-4 questions) → Offer: "Would you like to connect with our team to explore how a novated lease could work for you? They can provide more personalised assistance!"
-- If user seems satisfied after getting an answer (ONLY after 3-4 questions) → Offer: "Are you interested in learning more? We can connect you with our team." or use end_conversation if they indicate they're done
-- IMPORTANT: Do NOT offer team connection in the first 2 questions
+- If ALL details (name, email, phone) are collected and step is 'confirmation' → Say: "Perfect! I've got all your details sorted. I'll submit them to our team and they'll contact you shortly. While you're here, is there anything else you'd like to know about WhipSmart's EV leasing services, novated leases, or how we can help you?" Then CONTINUE the conversation asking about WhipSmart topics - do NOT end the conversation or call submit_lead/end_conversation unless user explicitly says they're done.
+- Focus on answering questions clearly - the system automatically handles team connection offers after 3-4 questions
 - CRITICAL: When user provides contact details (email/phone), acknowledge and thank them, then ask if they need other help or if they're done
 - CRITICAL: If Name is already stored, use it in your responses - personalize the conversation by addressing them by name
+- CRITICAL: When ALL details (name, email, phone) are collected and step is 'confirmation':
+  - Acknowledge: "Perfect! I've got all your details sorted."
+  - Inform about submission: "I'll submit them to our team and they'll contact you shortly."
+  - Continue engaging: "While you're here, is there anything else you'd like to know about WhipSmart's EV leasing services, novated leases, or how we can help you?"
+  - IMPORTANT: After collecting info, CONTINUE the conversation asking about WhipSmart topics - do NOT automatically call submit_lead or end_conversation
+  - Only call submit_lead or end_conversation if user explicitly says they're done, have no more questions, or want to end
+  - Keep asking about WhipSmart-related topics until user explicitly declines or says they're finished
 
-Remember: You are Alex AI with a professional Australian accent - be warm, friendly, and professional. Your MAIN GOAL is conversion - understand user intent, answer questions, and guide them to connect with our team (but only after 3-4 questions, not at the start). Always use Australian expressions naturally and professionally.
+Remember: You are Alex AI with a professional Australian accent - be warm, friendly, and professional. Your MAIN GOAL is to understand user intent and answer questions clearly. The system automatically handles team connection offers - focus on providing helpful answers. Always use Australian expressions naturally and professionally.
 
 FINAL REMINDER ABOUT STORED INFORMATION:
 - Check the CURRENT STATE above - if Name shows an actual name (not "Not provided"), you MUST use it in your response
-- If Name is stored, address the user by name (e.g., "Thanks, {name}!" or "{name}, here's what I found...")
-- If Name is stored, NEVER ask "What should I call you?" or "May I know your name?" - you already have it!
-- If Email or Phone is stored, NEVER ask for it again - you already have it
+- If Name is stored, address the user by name naturally (e.g., "Thanks, {name}!" or "{name}, here's what I found...")
+- CRITICAL: Do NOT mention that you already have their information (e.g., "Since I already have your name", "I already have your details", "no need to ask again")
+- Simply use their name naturally without acknowledging that you already have it
+- If Name is stored, NEVER ask "What should I call you?" or "May I know your name?" - just use their name
+- If Email or Phone is stored, NEVER ask for it again - just use it if needed
 - When user provides their name naturally (even just saying "Pat"), extract it using collect_user_info tool immediately
+- Keep responses simple and formal - avoid unnecessary explanations about what information you have
 
 CRITICAL ACTION ITEMS (MUST FOLLOW - CHECK FLAGS ABOVE):
 - If should_ask_for_name flag is True: You MUST ask for the user's name in this response (use ask_for_missing_field tool with field='name' OR ask naturally)
-- If should_offer_team_connection flag is True: You MUST offer team connection in this response (unless you're also asking for name - then offer in next response)
 - These are MANDATORY actions when flags are True - do not skip them""".format(
             name=name or "Not provided",
             email=email or "Not provided",
@@ -1400,16 +1793,7 @@ CRITICAL ACTION ITEMS (MUST FOLLOW - CHECK FLAGS ABOVE):
         # Add instruction to ask for name if needed
         if should_ask_for_name:
             logger.info(f"[NAME COLLECTION] Flag set to True - instructing LLM to ask for name. Current name: {name}")
-            prompt += "\n\n🚨 CRITICAL INSTRUCTION - NAME COLLECTION (MANDATORY): 🚨\nThe user has asked 2-3 questions but hasn't provided their name yet. You MUST ask for their name in your response.\n\nOPTIONS:\n1. Use the ask_for_missing_field tool with field='name' (RECOMMENDED)\n2. OR naturally ask in your response after answering their question\n\nExamples of natural asking:\n- 'By the way, I'd love to know your name so I can personalize our conversation! What should I call you?'\n- 'I'd like to address you properly - may I know your name?'\n- 'What should I call you?'\n\nIMPORTANT: Do this AFTER answering their current question. Make it feel natural and conversational.\nCRITICAL: Do NOT offer team connection in the same message when asking for name - keep them separate."
-        
-        # Add instruction about when to offer team connection
-        if should_offer_team_connection:
-            logger.info(f"[TEAM CONNECTION] Flag set to True - instructing LLM to offer team connection")
-            prompt += "\n\n🚨 CRITICAL INSTRUCTION - TEAM CONNECTION (MANDATORY): 🚨\nThe user has asked 3-4 questions. You MUST offer to connect them with our team in your response.\n\nIMPORTANT: If you are also asking for their name in this response, do NOT offer team connection in the same message - offer it in a separate follow-up message instead.\n\nWhen offering team connection, use phrases like:\n- 'Would you like to connect with our team to explore how a novated lease could work for you? They can provide more personalised assistance!'\n- 'I can connect you with our team to get personalized assistance. Would you like me to do that?'\n- 'Are you interested in learning more? We can connect you with our team.'\n\nMake it natural and helpful, not pushy."
-        else:
-            # Only show this if we're not asking for name (to avoid confusion)
-            if not should_ask_for_name:
-                prompt += "\n\nIMPORTANT: This is still early in the conversation (first 2 questions). Do NOT offer team connection yet. Focus on answering their questions clearly and helpfully. Wait until after 3-4 questions before offering team connection."
+            prompt += "\n\n🚨 CRITICAL INSTRUCTION - NAME COLLECTION (MANDATORY): 🚨\nThe user has asked 2-3 questions but hasn't provided their name yet. You MUST ask for their name in your response.\n\nOPTIONS:\n1. Use the ask_for_missing_field tool with field='name' (RECOMMENDED)\n2. OR naturally ask in your response after answering their question\n\nExamples of natural asking:\n- 'By the way, I'd love to know your name so I can personalize our conversation! What should I call you?'\n- 'I'd like to address you properly - may I know your name?'\n- 'What should I call you?'\n\nIMPORTANT: Do this AFTER answering their current question. Make it feel natural and conversational."
         
         return prompt
     
@@ -1509,7 +1893,7 @@ CRITICAL ACTION ITEMS (MUST FOLLOW - CHECK FLAGS ABOVE):
                 "type": "function",
                 "function": {
                     "name": "submit_lead",
-                    "description": "Submit the lead when all information (name, email, phone) is collected and user confirms. Only call when user says 'yes' to confirmation.",
+                    "description": "Submit the lead ONLY when user explicitly confirms they want to submit (e.g., says 'yes' to confirmation question, 'submit my details', 'go ahead and submit'). DO NOT call this automatically after collecting info - continue the conversation asking about WhipSmart topics until user explicitly confirms submission or says they're done.",
                     "parameters": {
                         "type": "object",
                         "properties": {},
@@ -1658,34 +2042,164 @@ CRITICAL ACTION ITEMS (MUST FOLLOW - CHECK FLAGS ABOVE):
         updated_fields = []
         
         # Extract and validate name
-        if args.get('name') and not self.conversation_data.get('name'):
-            name = args['name'].strip()
-            if self._validate_name(name):
-                self.conversation_data['name'] = name
+        # Always update name if provided, especially if new name is full name and old one wasn't
+        if args.get('name'):
+            new_name = args['name'].strip()
+            current_name = self.conversation_data.get('name', '')
+            
+            # Update if: no name exists, or new name is full name and current isn't, or new name is different
+            should_update_name = (
+                not current_name or 
+                (self._is_full_name(new_name) and not self._is_full_name(current_name)) or
+                new_name != current_name
+            )
+            
+            if should_update_name and self._validate_name(new_name):
+                self.conversation_data['name'] = new_name
                 updated_fields.append('name')
         
-        # Extract and validate email
-        if args.get('email') and not self.conversation_data.get('email'):
-            email = args['email'].strip().lower()
-            if self._validate_email(email):
-                self.conversation_data['email'] = email
+        # Extract and validate email - always update if provided
+        if args.get('email'):
+            new_email = args['email'].strip().lower()
+            current_email = self.conversation_data.get('email', '')
+            
+            if (not current_email or new_email != current_email) and self._validate_email(new_email):
+                self.conversation_data['email'] = new_email
                 updated_fields.append('email')
         
-        # Extract and validate phone
-        if args.get('phone') and not self.conversation_data.get('phone'):
-            phone = args['phone'].strip()
-            if self._validate_phone(phone):
-                self.conversation_data['phone'] = phone
+        # Extract and validate phone - always update if provided
+        if args.get('phone'):
+            new_phone = args['phone'].strip()
+            current_phone = self.conversation_data.get('phone', '')
+            
+            if (not current_phone or new_phone != current_phone) and self._validate_phone(new_phone):
+                # Format phone number with +61 prefix
+                formatted_phone = format_phone_number(new_phone)
+                self.conversation_data['phone'] = formatted_phone
                 updated_fields.append('phone')
         
         # Update step if all fields collected
-        if self.conversation_data.get('name') and self.conversation_data.get('email') and self.conversation_data.get('phone'):
-            if self.conversation_data.get('step') != 'confirmation':
-                self.conversation_data['step'] = 'confirmation'
+        name = self.conversation_data.get('name')
+        email = self.conversation_data.get('email')
+        phone = self.conversation_data.get('phone')
+        
+        # Check if we need to ask for full name
+        needs_full_name = False
+        if name and not self._is_full_name(name):
+            needs_full_name = True
+        
+        if name and email and phone:
+            # Only proceed if we have a full name
+            if self._is_full_name(name):
+                # Update step to confirmation if not already there
+                if self.conversation_data.get('step') != 'confirmation':
+                    self.conversation_data['step'] = 'confirmation'
+                
+                # ALWAYS try to create contact in HubSpot if not already created
+                # This ensures contact is created even if step was already 'confirmation'
+                if not self.conversation_data.get('hubspot_contact_id'):
+                    try:
+                        # Split name into firstname and lastname
+                        name_parts = name.strip().split(maxsplit=1)
+                        firstname = name_parts[0] if name_parts else name
+                        lastname = name_parts[1] if len(name_parts) > 1 else ""
+                        
+                        logger.info("Attempting to create HubSpot contact: %s %s (%s)", firstname, lastname, email)
+                        
+                        # Create contact in HubSpot
+                        contact_result = create_contact(
+                            firstname=firstname,
+                            lastname=lastname,
+                            email=email,
+                            phone=phone,
+                            hs_lead_status="NEW",
+                            lifecyclestage="lead"
+                        )
+                        
+                        if contact_result:
+                            self.conversation_data['hubspot_contact_id'] = contact_result.get('contact_id')
+                            logger.info("HubSpot contact created successfully: %s for %s (%s)", 
+                                      contact_result.get('contact_id'), name, email)
+                        else:
+                            logger.warning("Failed to create HubSpot contact for %s (%s) - create_contact returned None", name, email)
+                    except Exception as e:
+                        logger.error("Error creating HubSpot contact: %s", str(e), exc_info=True)
+                        # Don't fail the collection if HubSpot creation fails
+                else:
+                    # HubSpot contact already exists - update it if fields changed
+                    hubspot_contact_id = self.conversation_data.get('hubspot_contact_id')
+                    if hubspot_contact_id and updated_fields:
+                        try:
+                            # Prepare update properties based on updated fields
+                            update_properties = {}
+                            
+                            if 'name' in updated_fields:
+                                # Split name into firstname and lastname
+                                name_parts = name.strip().split(maxsplit=1)
+                                update_properties['firstname'] = name_parts[0] if name_parts else name
+                                update_properties['lastname'] = name_parts[1] if len(name_parts) > 1 else ""
+                            
+                            if 'email' in updated_fields:
+                                update_properties['email'] = email
+                            
+                            if 'phone' in updated_fields:
+                                update_properties['phone'] = phone
+                            
+                            # Update contact in HubSpot
+                            if update_properties:
+                                update_result = update_contact(
+                                    contact_id=hubspot_contact_id,
+                                    **update_properties
+                                )
+                                
+                                if update_result:
+                                    logger.info("HubSpot contact %s updated successfully with fields: %s", 
+                                              hubspot_contact_id, ', '.join(updated_fields))
+                                else:
+                                    logger.warning("Failed to update HubSpot contact %s for fields: %s", 
+                                                 hubspot_contact_id, ', '.join(updated_fields))
+                        except Exception as e:
+                            logger.error("Error updating HubSpot contact %s: %s", hubspot_contact_id, str(e), exc_info=True)
+                            # Don't fail the collection if HubSpot update fails
+                    else:
+                        logger.debug("HubSpot contact already exists: %s", self.conversation_data.get('hubspot_contact_id'))
+            else:
+                # Name is not full, don't move to confirmation yet
+                needs_full_name = True
+                logger.debug("Full name required. Current name: '%s'", name)
+        else:
+            # Not all fields collected yet, but if HubSpot contact exists and fields were updated, update HubSpot
+            hubspot_contact_id = self.conversation_data.get('hubspot_contact_id')
+            if hubspot_contact_id and updated_fields:
+                try:
+                    update_properties = {}
+                    
+                    if 'name' in updated_fields and name:
+                        name_parts = name.strip().split(maxsplit=1)
+                        update_properties['firstname'] = name_parts[0] if name_parts else name
+                        update_properties['lastname'] = name_parts[1] if len(name_parts) > 1 else ""
+                    
+                    if 'email' in updated_fields and email:
+                        update_properties['email'] = email
+                    
+                    if 'phone' in updated_fields and phone:
+                        update_properties['phone'] = phone
+                    
+                    if update_properties:
+                        update_result = update_contact(
+                            contact_id=hubspot_contact_id,
+                            **update_properties
+                        )
+                        
+                        if update_result:
+                            logger.info("HubSpot contact %s updated successfully with fields: %s", 
+                                      hubspot_contact_id, ', '.join(updated_fields))
+                except Exception as e:
+                    logger.error("Error updating HubSpot contact %s: %s", hubspot_contact_id, str(e), exc_info=True)
         
         self._save_conversation_data()
         
-        return {
+        response = {
             "success": True,
             "updated_fields": updated_fields,
             "current_data": {
@@ -1693,8 +2207,15 @@ CRITICAL ACTION ITEMS (MUST FOLLOW - CHECK FLAGS ABOVE):
                 "email": self.conversation_data.get('email', ''),
                 "phone": self.conversation_data.get('phone', '')
             },
-            "missing_fields": self._get_missing_fields()
+            "missing_fields": self._get_missing_fields(),
+            "hubspot_contact_id": self.conversation_data.get('hubspot_contact_id')
         }
+        
+        # Add flag if full name is needed
+        if needs_full_name:
+            response["needs_full_name"] = True
+        
+        return response
     
     def _tool_update_user_info(self, args: Dict) -> Dict:
         """Update a specific field."""
@@ -1704,7 +2225,13 @@ CRITICAL ACTION ITEMS (MUST FOLLOW - CHECK FLAGS ABOVE):
         if not field or not value:
             return {"error": "Field and value are required"}
         
-        # Validate based on field type
+        # Get current values before update
+        current_name = self.conversation_data.get('name', '')
+        current_email = self.conversation_data.get('email', '')
+        current_phone = self.conversation_data.get('phone', '')
+        hubspot_contact_id = self.conversation_data.get('hubspot_contact_id')
+        
+        # Validate and update local data
         if field == 'name':
             if not self._validate_name(value):
                 return {"error": "Invalid name format"}
@@ -1716,11 +2243,43 @@ CRITICAL ACTION ITEMS (MUST FOLLOW - CHECK FLAGS ABOVE):
         elif field == 'phone':
             if not self._validate_phone(value):
                 return {"error": "Invalid phone format"}
-            self.conversation_data['phone'] = value
+            formatted_phone = format_phone_number(value)
+            self.conversation_data['phone'] = formatted_phone
         else:
             return {"error": f"Unknown field: {field}"}
         
         self._save_conversation_data()
+        
+        # Update HubSpot contact if it exists
+        if hubspot_contact_id:
+            try:
+                # Prepare update properties based on field
+                update_properties = {}
+                
+                if field == 'name':
+                    # Split name into firstname and lastname
+                    name_parts = value.strip().split(maxsplit=1)
+                    update_properties['firstname'] = name_parts[0] if name_parts else value
+                    update_properties['lastname'] = name_parts[1] if len(name_parts) > 1 else ""
+                elif field == 'email':
+                    update_properties['email'] = value.lower()
+                elif field == 'phone':
+                    update_properties['phone'] = format_phone_number(value)
+                
+                # Update contact in HubSpot
+                update_result = update_contact(
+                    contact_id=hubspot_contact_id,
+                    **update_properties
+                )
+                
+                if update_result:
+                    logger.info("HubSpot contact %s updated successfully: %s changed to %s", 
+                              hubspot_contact_id, field, value[:3] + "***" if field == 'email' else value)
+                else:
+                    logger.warning("Failed to update HubSpot contact %s for field %s", hubspot_contact_id, field)
+            except Exception as e:
+                logger.error("Error updating HubSpot contact %s: %s", hubspot_contact_id, str(e), exc_info=True)
+                # Don't fail the update if HubSpot update fails
         
         return {
             "success": True,
@@ -1819,6 +2378,13 @@ CRITICAL ACTION ITEMS (MUST FOLLOW - CHECK FLAGS ABOVE):
             return False
         return True
     
+    def _is_full_name(self, name: str) -> bool:
+        """Check if name contains both first and last name (at least 2 words)."""
+        if not name:
+            return False
+        name_parts = name.strip().split()
+        return len(name_parts) >= 2
+    
     def _validate_email(self, email: str) -> bool:
         """Validate email."""
         if not email:
@@ -1859,12 +2425,12 @@ CRITICAL ACTION ITEMS (MUST FOLLOW - CHECK FLAGS ABOVE):
         conversation_history = self._get_conversation_history(limit=4)
         
         # If user is already in lead collection flow, don't show suggestions
-        if self.conversation_data.get('step') in ['confirmation', 'complete']:
+        # NOTE: 'confirmation' step should still show suggestions - continue engaging about WhipSmart topics
+        if self.conversation_data.get('step') == 'complete':
             return []
         
-        # If user already has all info collected, don't show suggestions
-        if self.conversation_data.get('name') and self.conversation_data.get('email') and self.conversation_data.get('phone'):
-            return []
+        # NOTE: Even if all info is collected, continue showing suggestions to engage about WhipSmart topics
+        # Only stop when conversation is explicitly marked as complete
         
         # Use the existing generate_suggestions function
         suggestions = generate_suggestions(
@@ -1920,14 +2486,21 @@ CRITICAL ACTION ITEMS (MUST FOLLOW - CHECK FLAGS ABOVE):
                     updated_fields = result["result"].get("updated_fields", [])
                     if updated_fields:
                         missing = result["result"].get("missing_fields", [])
+                        name = self.conversation_data.get('name', '')
+                        email = self.conversation_data.get('email', '')
+                        phone = self.conversation_data.get('phone', '')
+                        step = self.conversation_data.get('step', '')
+                        
                         if 'email' in missing:
-                            return "Thank you! Could you please provide your email address?"
+                            return f"Thank you{', ' + name.split()[0] if name else ''}! Could you please provide your email address?"
                         elif 'phone' in missing:
-                            return "Perfect! Now, could you please provide your phone number?"
+                            return f"Perfect! Now, could you please provide your phone number?"
+                        elif not missing and name and email and phone:
+                            # All details collected - acknowledge properly
+                            first_name = name.split()[0] if name else ""
+                            return f"Perfect{', ' + first_name if first_name else ''}! I've got all your details sorted. I'll submit them to our team and they'll contact you shortly. Is there anything else you'd like to know, or are you all set?"
                         elif not missing:
-                            name = self.conversation_data.get('name', '')
-                            email = self.conversation_data.get('email', '')
-                            phone = self.conversation_data.get('phone', '')
+                            # Partial collection - show confirmation format
                             return f"""Here is what I have collected:
 Name: {name}
 Email: {email}
@@ -1951,6 +2524,510 @@ Is this correct? (Yes/No)"""
         if not self.conversation_data.get('phone'):
             return 'phone'
         return None
+    
+    def _should_skip_post_processing(self, user_message: str, function_names: list, step: str, needs_info: Optional[str], assistant_message: str = "") -> bool:
+        """
+        Determine if post-processing (follow-up messages) should be skipped.
+        Skip ONLY when we're ACTIVELY collecting information, not just when information is missing.
+        
+        Skip when:
+        1. We're in information collection step (step is 'name', 'email', 'phone', 'confirmation', 'complete')
+        2. LLM is actively collecting user information (collect_user_info or ask_for_missing_field tool was called)
+        3. User just said "yes" to connecting with team (transitioning to collection mode)
+        4. Current assistant message is asking for user details (name, email, phone)
+        
+        DO NOT skip when:
+        - needs_info is set but step is 'chatting' (just missing info, not actively collecting)
+        - We're answering informational questions (should allow follow-up messages)
+        """
+        user_lower = user_message.lower().strip()
+        assistant_lower = assistant_message.lower() if assistant_message else ""
+        
+        # Skip if we're in information collection step (actively collecting)
+        # NOTE: 'confirmation' is NOT skipped - after collecting info, we should continue asking about WhipSmart topics
+        if step in ['name', 'email', 'phone', 'complete']:
+            logger.info(f"[POST-PROCESS] Skipping - step is '{step}' (actively collecting information)")
+            return True
+        
+        # Skip if collect_user_info or ask_for_missing_field tool was called (actively collecting information)
+        if "collect_user_info" in function_names or "ask_for_missing_field" in function_names:
+            logger.info("[POST-PROCESS] Skipping - information collection tool was called (actively collecting)")
+            return True
+        
+        # CRITICAL: Check if CURRENT assistant message is asking for user details
+        # This prevents post-processing when we're actively asking for information
+        if assistant_lower:
+            asking_for_details_phrases = [
+                'could you please provide',
+                'please provide your',
+                'could you please share',
+                'please share your',
+                'can you provide your',
+                'can you share your',
+                'could you provide your',
+                'could you share your',
+                'please provide',
+                'provide your',
+                'share your',
+                'your full name',
+                'your name',
+                'your email address',
+                'your email',
+                'your phone number',
+                'your phone',
+                'email address and phone',
+                'email and phone number',
+                'to connect you with our team',
+                'to connect with our team'
+            ]
+            if any(phrase in assistant_lower for phrase in asking_for_details_phrases):
+                logger.info("[POST-PROCESS] Skipping - current assistant message is asking for user details")
+                return True
+        
+        # Skip if user just said "yes" and previous message was asking to connect with team
+        # This means we're transitioning to information collection mode
+        if user_lower in ['yes', 'yep', 'yeah', 'sure', 'okay', 'ok']:
+            conversation_history = self._get_conversation_history(limit=2)
+            if conversation_history:
+                # Check last assistant message
+                last_assistant_msg = None
+                for msg in reversed(conversation_history):
+                    if msg.get('role') == 'assistant':
+                        last_assistant_msg = msg.get('content', '').lower()
+                        break
+                
+                if last_assistant_msg:
+                    # Check if last message was asking to connect with team
+                    team_connection_phrases = [
+                        'connect with our team',
+                        'connect with the team',
+                        'connect you with',
+                        'would you like to connect',
+                        'connect with team'
+                    ]
+                    if any(phrase in last_assistant_msg for phrase in team_connection_phrases):
+                        logger.info("[POST-PROCESS] Skipping - user said 'yes' to team connection, transitioning to collection")
+                        return True
+        
+        # Check if assistant message in history is asking for information (email, phone, name)
+        # This handles the case where LLM asks "Could you please share your email address..."
+        conversation_history = self._get_conversation_history(limit=1)
+        if conversation_history:
+            last_assistant_msg = None
+            for msg in reversed(conversation_history):
+                if msg.get('role') == 'assistant':
+                    last_assistant_msg = msg.get('content', '').lower()
+                    break
+            
+            if last_assistant_msg:
+                # Check if last assistant message is asking for contact info
+                asking_for_info_phrases = [
+                    'could you please share',
+                    'please share your',
+                    'please provide your',
+                    'can you share your',
+                    'can you provide your',
+                    'email address and phone',
+                    'email and phone number',
+                    'your email address',
+                    'your phone number'
+                ]
+                if any(phrase in last_assistant_msg for phrase in asking_for_info_phrases):
+                    logger.info("[POST-PROCESS] Skipping - assistant is asking for contact information")
+                    return True
+        
+        # Don't skip - proceed with post-processing (informational answers should get follow-up messages)
+        logger.info(f"[POST-PROCESS] Proceeding - step='{step}', needs_info='{needs_info}' (not actively collecting)")
+        return False
+    
+    def _analyze_and_generate_followup_message(self, assistant_message: str, user_message: str, conversation_history: list, should_ask_for_name: bool, current_name: str) -> Tuple[str, str]:
+        """
+        Post-processing layer: Analyze the answer and decide which ONE type of follow-up message to send.
+        Types: 'follow_up', 'ask_to_connect', 'ask_name', or None
+        This runs AFTER answer generation, in parallel/non-blocking.
+        
+        Uses last 6-7 messages for full context understanding.
+        
+        Returns:
+            tuple: (message_type: str, message: str)
+            message_type can be: 'follow_up', 'ask_to_connect', 'ask_name', or ''
+        """
+        try:
+            client, model = _get_openai_client()
+            if not client or not model:
+                # Fallback: simple heuristic
+                return self._simple_followup_check(assistant_message, user_message, should_ask_for_name, current_name)
+            
+            # Extract key topics from assistant message for dynamic message generation
+            assistant_lower = assistant_message.lower()
+            topics_mentioned = []
+            if 'novated lease' in assistant_lower:
+                topics_mentioned.append('novated lease')
+            if 'benefit' in assistant_lower or 'saving' in assistant_lower:
+                topics_mentioned.append('benefits and savings')
+            if 'cost' in assistant_lower or 'price' in assistant_lower or 'payment' in assistant_lower:
+                topics_mentioned.append('pricing')
+            if 'electric vehicle' in assistant_lower or 'ev' in assistant_lower:
+                topics_mentioned.append('electric vehicles')
+            if 'getting started' in assistant_lower or 'process' in assistant_lower:
+                topics_mentioned.append('getting started')
+            if 'tax' in assistant_lower or 'fbt' in assistant_lower:
+                topics_mentioned.append('tax benefits')
+            
+            topics_str = ', '.join(topics_mentioned) if topics_mentioned else 'general information'
+            
+            # Format conversation history for context (last 6-7 messages)
+            history_context = ""
+            if conversation_history:
+                # Take last 6-7 messages for context
+                recent_history = conversation_history[-7:] if len(conversation_history) > 7 else conversation_history
+                history_messages = []
+                for msg in recent_history:
+                    role = msg.get('role', 'unknown')
+                    content = msg.get('content', '')[:200]  # Limit each message to 200 chars for context
+                    if role == 'user':
+                        history_messages.append(f"User: {content}")
+                    elif role == 'assistant':
+                        history_messages.append(f"Assistant: {content}")
+                history_context = "\n".join(history_messages)
+            else:
+                history_context = "No previous conversation history"
+            
+            # Build analysis prompt with full context
+            analysis_prompt = f"""You are analyzing a chat conversation to decide which ONE follow-up message to send.
+
+CURRENT USER MESSAGE: {user_message}
+
+CURRENT ASSISTANT ANSWER: {assistant_message}
+
+CONVERSATION HISTORY (Last 6-7 messages for context):
+{history_context}
+
+KEY TOPICS DISCUSSED: {topics_str}
+TOTAL MESSAGES IN CONVERSATION: {len(conversation_history)}
+SHOULD ASK FOR NAME: {should_ask_for_name}
+CURRENT NAME: {current_name if current_name else "Not provided"}
+
+TASK:
+Decide which ONE type of follow-up message to send (only ONE per response). Use the FULL conversation history to understand context and flow. Be professional but approachable - think of a friendly, modern professional tone.
+
+DECISION LOGIC (BALANCED PRIORITY):
+1. "ask_to_connect" - PRIORITIZE when:
+   - User asked about benefits, pricing, costs, savings, getting started, or shows strong interest
+   - User asked "how does it work" or "what are the benefits" - these are conversion opportunities
+   - Conversation has depth (3+ messages) and user is engaged
+   - User seems ready to take next step
+   - IMPORTANT: This is our conversion goal - offer team connection when appropriate
+   - Based on conversation history, user shows genuine interest
+
+2. "ask_name" - Use when:
+   - should_ask_for_name is True AND current_name is empty
+   - BUT: Only if it's early in conversation (first 2-3 messages) OR team connection isn't more appropriate
+   - Don't prioritize name over team connection if user shows strong interest
+   - Good for personalization early in conversation
+
+3. "follow_up" - Use when:
+   - User asked informational questions that could benefit from more details
+   - User seems curious but not ready for team connection yet
+   - Good for keeping conversation going without being pushy
+   - Conversation history shows user is exploring topics
+
+4. "" (empty) - If:
+   - None of the above apply
+   - User seems satisfied or conversation is ending
+   - Don't overdo it - sometimes no follow-up is best
+   - Conversation history suggests user is done
+
+BALANCING RULES:
+- Our goal is conversion (team connection), but balance it naturally
+- Don't always ask for name first - team connection can be more valuable
+- If user shows interest (benefits, pricing, getting started), prioritize ask_to_connect
+- If it's very early (first message), ask_name might be better for personalization
+- If user asked informational question, follow_up keeps conversation flowing
+- Use conversation history to understand user's journey and intent
+- Maximum 60 tokens (very short, 1-2 sentences)
+- Tone: Professional but young - friendly, modern, approachable, not overly formal
+- Do NOT start with acknowledgments like "Hope that helps!", "Great question!", "Thanks for asking!", "Perfect!", "No worries at all!" - go straight to the message content
+- Make messages DYNAMIC and contextual - relate to what was just discussed AND conversation history
+
+MESSAGE FORMATS (MAX 60 TOKENS EACH - COUNT CAREFULLY!):
+Make messages DYNAMIC and contextual - relate to the specific topic discussed AND conversation flow.
+
+- ask_name: "[Natural transition] I'd love to personalise our chat—what should I call you?"
+  Examples (professional but young tone):
+  - "By the way, I'd love to personalise our conversation—what should I call you?"
+  - "I'd love to know your name so I can make this more personal. What should I call you?"
+  - "What should I call you?"
+  - "Quick question—what should I call you?"
+  
+- ask_to_connect: "[Dynamic offer related to topic] Would you like to connect with our team to explore how [specific topic from answer] could work for you? They can provide personalised assistance!"
+  Examples (professional but young, contextual to conversation):
+  - If discussing novated leases: "Would you like to connect with our team to explore how a novated lease could specifically benefit you? They can provide personalised assistance!"
+  - If discussing benefits: "Would you like to connect with our team to explore your savings potential? They can help you figure out what works best!"
+  - If discussing pricing: "Would you like to connect with our team to get personalised pricing? They can walk you through your options!"
+  - If discussing getting started: "Would you like to connect with our team to get started? They can guide you through the process!"
+  - Make it relevant to the specific topic AND conversation history - don't use generic messages
+  
+- follow_up: "[Dynamic invitation related to topic] Let me know if you'd like to explore [specific aspect] further!" or "Feel free to ask if you'd like more details about [topic]!"
+  Examples (professional but young):
+  - "Let me know if you'd like to explore this further!"
+  - "Feel free to ask if you'd like more details about [specific topic mentioned in answer]!"
+  - "Let me know if you want to dive deeper into [topic]!"
+  - "Happy to chat more about [topic] if you'd like!"
+
+CRITICAL CONSTRAINTS:
+- Maximum 60 tokens per message - COUNT TOKENS CAREFULLY!
+- Do NOT include acknowledgments like "Hope that helps!", "Great question!", "Thanks for asking!", "Perfect!", "No worries at all!" - go straight to the message content
+- Tone: Professional but young - friendly, modern, approachable, not overly formal or corporate
+- Be concise - every word counts toward the 60 token limit
+- Use conversation history to understand context and flow
+
+CRITICAL: Make messages DYNAMIC and CONTEXTUAL:
+- Reference the specific topic discussed (e.g., "novated lease", "benefits", "pricing", "electric vehicles")
+- Use conversation history to understand what user has been asking about
+- Make ask_to_connect messages relevant to what was just discussed AND conversation flow
+- Make follow_up messages reference the specific aspect they might want to explore
+- Don't use generic messages - personalize based on the answer content AND conversation history
+- Use the KEY TOPICS DISCUSSED and CONVERSATION HISTORY to make messages relevant
+
+RESPOND WITH JSON:
+{{
+    "message_type": "ask_name" | "ask_to_connect" | "follow_up" | "",
+    "message": "Generated DYNAMIC message WITHOUT acknowledgments, referencing specific topics discussed and conversation context (EXACTLY 60 tokens or less - verify token count!)" OR null
+}}
+
+If message_type is empty string, message should be null."""
+
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "You are an expert at analyzing conversations and generating short, contextual follow-up messages. CRITICAL: Maximum 60 tokens per message. Count tokens carefully. Do NOT include acknowledgments like 'Hope that helps!', 'Great question!', 'Thanks for asking!', 'Perfect!', 'No worries at all!' - go straight to the message content. Use conversation history (last 6-7 messages) to understand context. Tone: Professional but young - friendly, modern, approachable, not overly formal. Australian tone preferred."},
+                    {"role": "user", "content": analysis_prompt}
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.7,
+                max_tokens=80  # Limit response to ensure message stays under 60 tokens
+            )
+            
+            result_text = response.choices[0].message.content.strip()
+            result_data = json.loads(result_text)
+            
+            message_type = result_data.get("message_type", "")
+            message = result_data.get("message", "")
+            
+            if message_type and message:
+                # Validate token count (approximately 4 characters per token, so 60 tokens ≈ 240 characters)
+                # This is a rough estimate - actual token count may vary
+                estimated_tokens = len(message.split()) * 1.3  # Rough estimate: words * 1.3
+                char_estimate = len(message) / 4  # Rough estimate: chars / 4
+                estimated_tokens = max(estimated_tokens, char_estimate)
+                
+                if estimated_tokens > 65:  # Allow small buffer
+                    logger.warning(f"[FOLLOWUP] Message may exceed 60 tokens (estimated {estimated_tokens:.1f} tokens), truncating...")
+                    # Truncate to approximately 60 tokens (240 characters)
+                    words = message.split()
+                    truncated = []
+                    char_count = 0
+                    for word in words:
+                        if char_count + len(word) + 1 <= 240:  # +1 for space
+                            truncated.append(word)
+                            char_count += len(word) + 1
+                        else:
+                            break
+                    message = " ".join(truncated)
+                    if not message.endswith(('.', '!', '?')):
+                        message += "!"
+                    logger.info(f"[FOLLOWUP] Truncated message to ~60 tokens: {message[:50]}...")
+                
+                logger.info(f"[FOLLOWUP] LLM decided to send {message_type} (estimated {estimated_tokens:.1f} tokens): {message[:50]}...")
+                return message_type, message
+            else:
+                logger.info("[FOLLOWUP] LLM decided NOT to send any follow-up message")
+                return "", ""
+                
+        except Exception as e:
+            logger.error(f"[FOLLOWUP] Error analyzing for follow-up message: {str(e)}", exc_info=True)
+            # Fallback to simple heuristic
+            return self._simple_followup_check(assistant_message, user_message, should_ask_for_name, current_name)
+    
+    def _remove_followup_phrases(self, text: str) -> str:
+        """
+        Removes follow-up phrases and invitations from the answer text.
+        These phrases should be handled separately after answer generation.
+        """
+        import re
+        
+        # Patterns to detect and remove follow-up phrases (case-insensitive)
+        followup_patterns = [
+            # "If you'd like more details..." patterns
+            r'if you\'d like more details.*',
+            r'if you\'d like to know more.*',
+            r'if you\'d like to explore.*',
+            r'if you\'d like.*feel free to ask.*',
+            r'feel free to ask.*',
+            r'feel free.*',
+            
+            # "Let me know if..." patterns (including "further guidance")
+            r'let me know if you\'d like.*',
+            r'let me know if.*',
+            r'let me know.*further guidance.*',
+            r'let me know.*further.*',
+            r'let me know.*guidance.*',
+            r'let me know.*',
+            
+            # "Would you like..." patterns (but not questions from the answer itself)
+            r'would you like to connect.*',
+            r'would you like to explore.*',
+            r'would you like.*more details.*',
+            r'would you like.*further.*',
+            
+            # "If you have any questions..." patterns
+            r'if you have any questions.*',
+            r'if you need.*more information.*',
+            r'if you\'re interested.*',
+            
+            # "Further guidance" patterns (more specific)
+            r'let me know if you\'d like further guidance.*',
+            r'let me know.*further guidance.*',
+            r'further guidance.*',
+            r'like further guidance.*',
+            r'if you\'d like further guidance.*',
+            r'if you\'d like.*guidance.*',
+            
+            # Other invitation patterns
+            r'feel free to reach out.*',
+            r'don\'t hesitate to ask.*',
+            r'please let me know.*',
+            r'i\'d be happy to.*',
+            r'if you need.*help.*',
+            r'if you need.*assistance.*',
+            
+            # Patterns with newlines before them
+            r'\n\nif you.*',
+            r'\nif you.*',
+            r'\n\nfeel free.*',
+            r'\nfeel free.*',
+            r'\n\nlet me know.*',
+            r'\nlet me know.*',
+            r'\n\nwould you like.*',
+            r'\nwould you like.*',
+            r'\n\nfurther guidance.*',
+            r'\nfurther guidance.*',
+        ]
+        
+        cleaned_text = text
+        for pattern in followup_patterns:
+            # Remove from end of message (after last sentence) - handle punctuation
+            cleaned_text = re.sub(pattern + r'[\.!?]?\s*$', '', cleaned_text, flags=re.IGNORECASE | re.DOTALL | re.MULTILINE)
+            # Remove if it appears as a standalone sentence (preceded by period or newline)
+            cleaned_text = re.sub(r'[\.!?]\s*' + pattern + r'[\.!?]?\s*', '. ', cleaned_text, flags=re.IGNORECASE | re.DOTALL)
+            # Remove from anywhere in the message
+            cleaned_text = re.sub(pattern, '', cleaned_text, flags=re.IGNORECASE | re.DOTALL)
+            # Also remove if it starts with newlines
+            cleaned_text = re.sub(r'\n\n+' + pattern.lstrip('\\n'), '', cleaned_text, flags=re.IGNORECASE | re.DOTALL)
+        
+        # Clean up any trailing newlines, spaces, or punctuation artifacts
+        cleaned_text = cleaned_text.rstrip()
+        # Remove trailing punctuation that might be left (like "!" or "?" after removing phrases)
+        cleaned_text = re.sub(r'[!?]+\s*$', '', cleaned_text)
+        # Ensure it ends with proper punctuation if it's a complete sentence
+        if cleaned_text and not cleaned_text.endswith(('.', '!', '?')):
+            # Check if it's a complete sentence (has capital letter and ends properly)
+            if cleaned_text[-1].isalnum():
+                cleaned_text += '.'
+        
+        if cleaned_text != text:
+            logger.info(f"[CLEANUP] Removed follow-up phrases from answer. Original length: {len(text)}, Cleaned length: {len(cleaned_text)}")
+        
+        return cleaned_text
+    
+    def _simple_followup_check(self, assistant_message: str, user_message: str, should_ask_for_name: bool, current_name: str) -> Tuple[str, str]:
+        """Simple heuristic fallback for follow-up message decision. Balanced priority."""
+        import random
+        
+        # Extract topic/keywords from assistant message for dynamic messages
+        assistant_lower = assistant_message.lower()
+        user_lower = user_message.lower()
+        
+        # Detect topic from assistant message
+        topic = None
+        if 'novated lease' in assistant_lower:
+            topic = 'novated lease'
+        elif 'benefit' in assistant_lower or 'saving' in assistant_lower:
+            topic = 'benefits and savings'
+        elif 'cost' in assistant_lower or 'price' in assistant_lower or 'payment' in assistant_lower:
+            topic = 'pricing'
+        elif 'electric vehicle' in assistant_lower or 'ev' in assistant_lower:
+            topic = 'electric vehicles'
+        elif 'getting started' in assistant_lower or 'process' in assistant_lower:
+            topic = 'getting started'
+        
+        # BALANCED DECISION LOGIC:
+        # 1. Check team connection first (conversion goal) if user shows interest
+        strong_interest_keywords = ['benefit', 'cost', 'price', 'saving', 'how does', 'how can', 'get started', 'interested', 'explore', 'learn more']
+        conversion_keywords = ['benefit', 'cost', 'price', 'saving', 'get started', 'interested']
+        
+        # If user asked about conversion topics, prioritize team connection
+        if any(keyword in user_lower for keyword in conversion_keywords) and len(assistant_message) > 100:
+            if topic:
+                team_messages = [
+                    f"Would you like to connect with our team to explore how {topic} could work for you? They can provide personalised assistance!",
+                    f"Would you like to connect with our team to explore your {topic} options? They can help!",
+                    f"Would you like to connect with our team to get personalised assistance with {topic}?"
+                ]
+            else:
+                team_messages = [
+                    "Would you like to connect with our team to explore how this could work for you? They can provide personalised assistance!",
+                    "Would you like to connect with our team for personalised assistance?",
+                    "Would you like to connect with our team to explore your options?"
+                ]
+            return "ask_to_connect", random.choice(team_messages)
+        
+        # 2. Check name request (but only if early in conversation or team connection not appropriate)
+        if should_ask_for_name and not current_name:
+            # Only ask for name if it's early OR if team connection isn't more appropriate
+            if any(keyword in user_lower for keyword in strong_interest_keywords):
+                # User shows interest - prioritize team connection over name
+                pass  # Skip name request, will check follow_up or return empty
+            else:
+                name_messages = [
+                    "By the way, I'd love to personalise our conversation—what should I call you?",
+                    "I'd love to know your name so I can make this more personal. What should I call you?",
+                    "What should I call you?"
+                ]
+                return "ask_name", random.choice(name_messages)
+        
+        # 3. Check team connection for general interest (if not already checked)
+        if any(keyword in user_lower for keyword in strong_interest_keywords) and len(assistant_message) > 100:
+            if topic:
+                team_messages = [
+                    f"Would you like to connect with our team to explore how {topic} could work for you? They can provide personalised assistance!",
+                    f"Would you like to connect with our team to explore your {topic} options? They can help!",
+                ]
+            else:
+                team_messages = [
+                    "Would you like to connect with our team to explore how this could work for you? They can provide personalised assistance!",
+                    "Would you like to connect with our team for personalised assistance?",
+                ]
+            return "ask_to_connect", random.choice(team_messages)
+        
+        # 4. Check follow up (for informational questions)
+        if len(assistant_message) > 50:
+            if topic:
+                follow_messages = [
+                    f"Let me know if you'd like to explore {topic} further!",
+                    f"Feel free to ask if you'd like more details about {topic}!",
+                    f"Happy to chat more about {topic} if you'd like!"
+                ]
+            else:
+                follow_messages = [
+                    "Let me know if you'd like to explore this further!",
+                    "Feel free to ask if you'd like more details!",
+                    "Happy to chat more if you'd like!"
+                ]
+            return "follow_up", random.choice(follow_messages)
+        
+        return "", ""
     
     def _save_conversation_data(self):
         """Save conversation data to session."""

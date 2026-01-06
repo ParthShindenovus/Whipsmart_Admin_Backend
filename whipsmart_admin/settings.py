@@ -345,6 +345,9 @@ NEO4J_USER = config('NEO4J_USER', default='neo4j')
 NEO4J_PASSWORD = config('NEO4J_PASSWORD', default='')
 USE_NEO4J = config('USE_NEO4J', default=False, cast=bool)  # Enable Neo4j instead of SQLite for Knowledge Graph
 
+# HubSpot settings
+HUBSPOT_ACCESS_TOKEN = config('HUBSPOT_ACCESS_TOKEN', default='')
+
 # Cloud Storage Configuration (for future use)
 # Currently using local media folder, but ready for cloud storage
 USE_CLOUD_STORAGE = config('USE_CLOUD_STORAGE', default=False, cast=bool)

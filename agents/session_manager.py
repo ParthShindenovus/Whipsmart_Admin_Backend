@@ -132,17 +132,19 @@ class DjangoSessionManager:
         """
         Save assistant message to database.
         session_id is the UUID id (primary key) of the Session.
+        Returns the created ChatMessage object.
         """
         try:
             # session_id is now the id (UUID primary key)
             session = Session.objects.get(id=session_id)
-            ChatMessage.objects.create(
+            chat_message = ChatMessage.objects.create(
                 session=session,
                 message=message,
                 role='assistant',
                 metadata=metadata or {}
             )
             logger.info(f"Saved assistant message for session: {session_id}")
+            return chat_message
         except Session.DoesNotExist:
             logger.error(f"Session not found when saving assistant message: {session_id}")
             raise
