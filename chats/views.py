@@ -3,11 +3,13 @@ from rest_framework.decorators import action, authentication_classes
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
 from rest_framework.authentication import BaseAuthentication
+from rest_framework.pagination import PageNumberPagination
 from django_filters.rest_framework import DjangoFilterBackend
 from drf_spectacular.utils import extend_schema_view, extend_schema, OpenApiParameter
 from drf_spectacular.types import OpenApiTypes
 from django.http import StreamingHttpResponse, Http404
 from django.utils import timezone
+from django.db.models import Q
 import json
 import logging
 from .models import ChatMessage, Session, Visitor
@@ -45,6 +47,56 @@ class NoAuthentication(BaseAuthentication):
 logger = logging.getLogger(__name__)
 
 
+class VisitorPagination(PageNumberPagination):
+    """
+    Custom pagination class for VisitorViewSet.
+    Allows clients to specify page_size via query parameter.
+    """
+    page_size = 20
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+    
+    def get_paginated_response(self, data):
+        """
+        Return a paginated style Response object with additional pagination info.
+        """
+        from rest_framework.response import Response
+        return Response({
+            'count': self.page.paginator.count,
+            'next': self.get_next_link(),
+            'previous': self.get_previous_link(),
+            'results': data,
+            'page': self.page.number,
+            'page_size': self.page_size,
+            'total_pages': self.page.paginator.num_pages,
+        })
+
+
+class SessionPagination(PageNumberPagination):
+    """
+    Custom pagination class for SessionViewSet.
+    Allows clients to specify page_size via query parameter.
+    """
+    page_size = 20
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+    
+    def get_paginated_response(self, data):
+        """
+        Return a paginated style Response object with additional pagination info.
+        """
+        from rest_framework.response import Response
+        return Response({
+            'count': self.page.paginator.count,
+            'next': self.get_next_link(),
+            'previous': self.get_previous_link(),
+            'results': data,
+            'page': self.page.number,
+            'page_size': self.page_size,
+            'total_pages': self.page.paginator.num_pages,
+        })
+
+
 def validate_session(session_id):
     """
     Validate that a session exists, is active, and not expired.
@@ -76,7 +128,7 @@ def validate_session(session_id):
 @extend_schema_view(
     list=extend_schema(
         summary="List all chat sessions",
-        description="Retrieve a list of all chat sessions. No authentication required. Sessions are automatically associated with visitors. Filter by visitor_id using query parameter: ?visitor_id=<uuid>",
+        description="Retrieve a paginated list of all chat sessions. No authentication required. Sessions are automatically associated with visitors. Filter by visitor_id using query parameter: ?visitor_id=<uuid>. Use 'page' and 'page_size' for pagination.",
         parameters=[
             OpenApiParameter(
                 name='visitor_id',
@@ -84,6 +136,20 @@ def validate_session(session_id):
                 location=OpenApiParameter.QUERY,
                 required=False,
                 description='Filter sessions by visitor ID'
+            ),
+            OpenApiParameter(
+                name='page',
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description='Page number (default: 1)'
+            ),
+            OpenApiParameter(
+                name='page_size',
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description='Number of results per page (default: 20, max: 100)'
             ),
         ],
         tags=['Sessions'],
@@ -119,14 +185,21 @@ class SessionViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
     3. Use session_id and visitor_id to send chat messages
     
     Provides CRUD operations: Create, Read, Delete, List.
+    
+    Features:
+    - Pagination: Use 'page' and 'page_size' query parameters
+    - Filtering: Filter by visitor_id, is_active, external_user_id
     """
     queryset = Session.objects.select_related('visitor').all()
     serializer_class = SessionSerializer
     authentication_classes = []  # No authentication - completely public endpoint (empty list disables all auth)
     permission_classes = [AllowAny]  # Sessions are public, no admin required, no user_id needed
+    pagination_class = SessionPagination
     search_fields = ['external_user_id']
     filterset_fields = ['is_active', 'external_user_id', 'visitor']
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     ordering = ['-created_at']
+    ordering_fields = ['created_at', 'last_message_at', 'is_active']
     
     def get_queryset(self):
         """
@@ -152,6 +225,32 @@ class SessionViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
         This prevents DRF from using default authentication classes.
         """
         return []
+    
+    def list(self, request, *args, **kwargs):
+        """
+        Override list to handle pagination properly with standardized response format.
+        """
+        # Call parent list method which handles pagination
+        response = super().list(request, *args, **kwargs)
+        
+        if response.status_code == status.HTTP_200_OK:
+            # Check if response is paginated (DRF pagination returns dict with 'results')
+            if isinstance(response.data, dict) and 'results' in response.data:
+                # Paginated response - wrap in standardized format
+                return success_response({
+                    'results': response.data['results'],
+                    'count': response.data.get('count', 0),
+                    'next': response.data.get('next'),
+                    'previous': response.data.get('previous'),
+                    'page': response.data.get('page', 1),
+                    'page_size': response.data.get('page_size', self.pagination_class.page_size),
+                    'total_pages': response.data.get('total_pages', 0),
+                })
+            else:
+                # Non-paginated response (shouldn't happen with pagination_class set, but handle it)
+                return success_response({'results': response.data})
+        
+        return response
     
     def create(self, request, *args, **kwargs):
         """
@@ -200,7 +299,30 @@ class SessionViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
 @extend_schema_view(
     list=extend_schema(
         summary="List all visitors",
-        description="Retrieve a list of all visitors. No authentication required.",
+        description="Retrieve a paginated list of all visitors with search functionality. No authentication required. Use 'search' query parameter to search by name, email, or phone. Use 'page' and 'page_size' for pagination.",
+        parameters=[
+            OpenApiParameter(
+                name='search',
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description='Search visitors by name, email, or phone number'
+            ),
+            OpenApiParameter(
+                name='page',
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description='Page number (default: 1)'
+            ),
+            OpenApiParameter(
+                name='page_size',
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description='Number of results per page (default: 20, max: 100)'
+            ),
+        ],
         tags=['Visitors'],
     ),
     create=extend_schema(
@@ -229,12 +351,20 @@ class VisitorViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
     2. Use visitor_id to create sessions and send chat messages
     
     Provides operations: Create, Read, List, Validate.
+    
+    Features:
+    - Pagination: Use 'page' and 'page_size' query parameters
+    - Search: Use 'search' query parameter to search by name, email, or phone
     """
     queryset = Visitor.objects.prefetch_related('sessions').all()
     serializer_class = VisitorSerializer
     authentication_classes = []  # No authentication - completely public endpoint
     permission_classes = [AllowAny]  # Visitors are public, no admin required
+    pagination_class = VisitorPagination
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = []  # Custom search handled in get_queryset
     ordering = ['-created_at']
+    ordering_fields = ['created_at', 'last_seen_at']
     
     def get_authenticators(self):
         """
@@ -242,6 +372,57 @@ class VisitorViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
         This prevents DRF from using default authentication classes.
         """
         return []
+    
+    def get_queryset(self):
+        """
+        Filter and search visitors.
+        Search functionality searches in Session.conversation_data for name, email, and phone.
+        """
+        queryset = super().get_queryset()
+        
+        # Get search query parameter
+        search_query = self.request.query_params.get('search', '').strip()
+        
+        if search_query:
+            # Search in Session's conversation_data JSONField for name, email, or phone
+            # Use Q objects to search across all sessions for each visitor
+            search_filter = Q(
+                # Search in sessions' conversation_data
+                sessions__conversation_data__name__icontains=search_query
+            ) | Q(
+                sessions__conversation_data__email__icontains=search_query
+            ) | Q(
+                sessions__conversation_data__phone__icontains=search_query
+            )
+            
+            queryset = queryset.filter(search_filter).distinct()
+        
+        return queryset
+    
+    def list(self, request, *args, **kwargs):
+        """
+        Override list to handle pagination properly with standardized response format.
+        """
+        response = super().list(request, *args, **kwargs)
+        
+        if response.status_code == status.HTTP_200_OK:
+            # Check if response is paginated
+            if isinstance(response.data, dict) and 'results' in response.data:
+                # Paginated response - wrap in standardized format
+                return success_response({
+                    'results': response.data['results'],
+                    'count': response.data.get('count', 0),
+                    'next': response.data.get('next'),
+                    'previous': response.data.get('previous'),
+                    'page': response.data.get('page', 1),
+                    'page_size': response.data.get('page_size', self.pagination_class.page_size),
+                    'total_pages': response.data.get('total_pages', 0),
+                })
+            else:
+                # Non-paginated response
+                return success_response({'results': response.data})
+        
+        return response
     
     def create(self, request, *args, **kwargs):
         """
