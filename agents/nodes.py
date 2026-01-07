@@ -7,6 +7,7 @@ from django.conf import settings
 from agents.prompts import SYSTEM_PROMPT, FINAL_SYNTHESIS_PROMPT, VALIDATION_PROMPT, DECISION_MAKER_PROMPT
 from agents.state import AgentState
 from agents.utils import is_greeting, get_greeting_response
+from chats.models import Session
 import logging
 from datetime import datetime
 
@@ -597,11 +598,23 @@ def final_node(state) -> AgentState:
         
         logger.info("[PROC]  Generating final synthesized answer...")
 
+        # Get user name from session for personalization
+        user_name = ""
+        try:
+            session = Session.objects.filter(id=state.session_id).first()
+            if session and session.conversation_data:
+                user_name = session.conversation_data.get('name', '')
+                if user_name:
+                    logger.info(f"[PERSONALIZATION] Found user name: {user_name}")
+        except Exception as e:
+            logger.warning(f"[PERSONALIZATION] Could not get user name: {str(e)}")
+
         # Create synthesis prompt with enhanced instructions for no-answer scenarios
         synthesis_prompt = FINAL_SYNTHESIS_PROMPT.format(
             tool_result=tool_result_str,
             conversation_context=conversation_context,
-            user_question=user_question
+            user_question=user_question,
+            user_name=user_name if user_name else "Not provided"
         )
         
         # If no relevant results found or validation failed, enhance the prompt with specific instructions

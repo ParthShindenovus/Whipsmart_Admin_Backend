@@ -1068,13 +1068,26 @@ Is this correct? (Yes/No)""",
         try:
             agent_state = session_manager.get_or_create_agent_state(str(self.session.id))
             
+            # Get user's name for personalization
+            user_name = self.conversation_data.get('name', '')
+            
             # Inject Support Agent system prompt
             system_prompt = SUPPORT_AGENT_PROMPT.format(
                 step=self.conversation_data.get('step', 'issue'),
                 issue=self.conversation_data.get('issue', ''),
-                name=self.conversation_data.get('name', ''),
+                name=user_name,
                 email=self.conversation_data.get('email', '')
             )
+            
+            # Add personalization instruction if name is known
+            if user_name:
+                system_prompt += f"""
+
+USER PERSONALIZATION:
+- The user's name is: {user_name}
+- ALWAYS address them by name naturally in your responses (e.g., "Great question, {user_name}!", "{user_name}, let me help with that:")
+- Use their name once per response to make the conversation more formal and personalized
+"""
             
             # Replace system message with agent-specific prompt
             messages = [{"role": "system", "content": system_prompt}]
@@ -1182,8 +1195,20 @@ class KnowledgeConversationHandler:
         try:
             agent_state = session_manager.get_or_create_agent_state(str(self.session.id))
             
-            # Inject Knowledge Agent system prompt
+            # Get user's name from conversation data for personalization
+            user_name = self.conversation_data.get('name', '')
+            
+            # Inject Knowledge Agent system prompt with personalization
             system_prompt = KNOWLEDGE_AGENT_PROMPT
+            if user_name:
+                # Add personalization instruction with user's name
+                system_prompt += f"""
+
+USER PERSONALIZATION:
+- The user's name is: {user_name}
+- ALWAYS address them by name naturally in your responses (e.g., "Great question, {user_name}!", "Here's what I found, {user_name}:")
+- Use their name once per response to make the conversation more formal and personalized
+"""
             
             # Replace system message with agent-specific prompt
             messages = [{"role": "system", "content": system_prompt}]
