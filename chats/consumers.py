@@ -977,16 +977,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
         """End session due to idle timeout."""
         if not self.session_id or not self.session:
             return
-        
+
         try:
-            # End session message - simple and professional
-            end_messages = [
-                "I'll end this session for now. Feel free to come back anytime if you need help!",
-                "I'll close this session. Chat again soon if you need anything!",
-                "I'll end this session. Come back whenever you're ready!",
-            ]
-            
-            end_message = random.choice(end_messages)
+            # End session message - polite and professional
+            end_message = "I'll end this conversation due to no response from your end for sometime. Please feel free to reach out to us anytime if you want to know more about WhipSmart"
             
             # Save end message to database using session_manager (same as REST API)
             await database_sync_to_async(session_manager.save_assistant_message)(
@@ -1033,16 +1027,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
     async def end_session_idle_shared(self, connection_key):
         """End session due to idle timeout - send to all connections."""
         session_id, visitor_id = connection_key
-        
+
         try:
-            # End session message - simple and professional
-            end_messages = [
-                "I'll end this session for now. Feel free to come back anytime if you need help!",
-                "I'll close this session. Chat again soon if you need anything!",
-                "I'll end this session. Come back whenever you're ready!",
-            ]
-            
-            end_message = random.choice(end_messages)
+            # End session message - polite and professional
+            end_message = "I'll end this conversation due to no response from your end for sometime. Please feel free to reach out to us anytime if you want to know more about WhipSmart"
             
             # Save end message to database using session_manager (same as REST API)
             await database_sync_to_async(session_manager.save_assistant_message)(

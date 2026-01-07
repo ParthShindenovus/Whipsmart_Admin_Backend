@@ -163,13 +163,7 @@ class Command(BaseCommand):
 
     def _end_session_idle(self, session):
         """End session due to idle timeout."""
-        end_messages = [
-            "I'll end this session for now. Feel free to come back anytime if you need help!",
-            "I'll close this session. Chat again soon if you need anything!",
-            "I'll end this session. Come back whenever you're ready!",
-        ]
-        
-        end_message = random.choice(end_messages)
+        end_message = "I'll end this conversation due to no response from your end for sometime. Please feel free to reach out to us anytime if you want to know more about WhipSmart"
         
         try:
             # Save end message to database
