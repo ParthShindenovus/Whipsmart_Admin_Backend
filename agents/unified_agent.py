@@ -221,7 +221,9 @@ class UnifiedAgent:
             }
         
         # Get current state
-        current_name = self.conversation_data.get('name', '')
+        full_name = self.conversation_data.get('name', '')
+        # Extract first name only for more natural conversation
+        current_name = full_name.strip().split()[0] if full_name.strip() else ''
         current_email = self.conversation_data.get('email', '')
         current_phone = self.conversation_data.get('phone', '')
         step = self.conversation_data.get('step', 'chatting')
@@ -248,7 +250,8 @@ class UnifiedAgent:
         
         # Check if we should subtly ask for name (after 3-4 questions without name)
         # This will be handled separately after answer generation
-        should_ask_for_name = self._should_ask_for_name(conversation_history, current_name)
+        # Use full_name for checking if name exists, but current_name (first name) for prompts
+        should_ask_for_name = self._should_ask_for_name(conversation_history, full_name)
         
         # Build system prompt (rag_context will be used in two-step process if needed)
         # Note: Team connection decision will be made AFTER answer generation
@@ -1549,8 +1552,10 @@ CRITICAL: WHEN ALL DETAILS ARE COLLECTED (Step is 'confirmation'):
 
 CRITICAL: PERSONALIZATION - ALWAYS ADDRESS USER BY NAME:
 - If Name is provided (not "Not provided"), you MUST address the user by their name in EVERY response
-- Use their name naturally at the beginning or within your response (e.g., "Great question, {name}!", "Here's what I found, {name}:", "{name}, let me explain...")
-- This makes the conversation more formal and personalized - it's a key part of good customer service
+- MANDATORY: ALWAYS start your answer with their name or include it naturally in the first sentence
+- Use their FIRST NAME only (if full name like "Noah Nicolas" is provided, use just "Noah")
+- Examples: "Great question, {name}!" or "{name}, here's what I found:" or "Here's what I found for you, {name}:"
+- This makes the conversation more formal and personalized - it's REQUIRED, not optional
 - Do NOT overuse the name - once per response is typically sufficient
 - NEVER ask for the user's name again once it's stored - just use it naturally
 - CRITICAL: Do NOT say things like "Since I already have your name", "I already have your details", "no need to ask again" - just use the name naturally
@@ -2123,10 +2128,13 @@ CRITICAL ACTION ITEMS (MUST FOLLOW - CHECK FLAGS ABOVE):
                         
                         if contact_result:
                             self.conversation_data['hubspot_contact_id'] = contact_result.get('contact_id')
+                            self.conversation_data['lead_submitted'] = True  # Mark lead as submitted to team
                             logger.info("HubSpot contact created successfully: %s for %s (%s)", 
                                       contact_result.get('contact_id'), name, email)
                         else:
                             logger.warning("Failed to create HubSpot contact for %s (%s) - create_contact returned None", name, email)
+                            # Even if HubSpot fails, consider lead submitted since we have all details
+                            self.conversation_data['lead_submitted'] = True
                     except Exception as e:
                         logger.error("Error creating HubSpot contact: %s", str(e), exc_info=True)
                         # Don't fail the collection if HubSpot creation fails
@@ -2317,9 +2325,10 @@ CRITICAL ACTION ITEMS (MUST FOLLOW - CHECK FLAGS ABOVE):
         logger.info(f"  Session ID: {self.session.id}")
         logger.info("=" * 80)
         
-        # Mark as complete
+        # Mark as complete and lead as submitted
         self.conversation_data['step'] = 'complete'
         self.conversation_data['submitted_at'] = timezone.now().isoformat()
+        self.conversation_data['lead_submitted'] = True  # Mark lead as submitted to prevent future "connect with team" prompts
         self._save_conversation_data()
         
         # Lock session
@@ -2658,10 +2667,26 @@ Is this correct? (Yes/No)"""
             message_type can be: 'follow_up', 'ask_to_connect', 'ask_name', or ''
         """
         try:
+            # CRITICAL: Check if user has already been connected (details submitted)
+            # If so, NEVER offer to connect again - just answer questions
+            name = self.conversation_data.get('name', '')
+            email = self.conversation_data.get('email', '')
+            phone = self.conversation_data.get('phone', '')
+            step = self.conversation_data.get('step', '')
+            lead_submitted = self.conversation_data.get('lead_submitted', False)
+            
+            # User is already connected if:
+            # 1. Lead has been explicitly submitted, OR
+            # 2. All three details (name, email, phone) are collected and step is 'confirmation' or 'complete'
+            already_connected = lead_submitted or (name and email and phone and step in ['confirmation', 'complete'])
+            
+            if already_connected:
+                logger.info("[POST-PROCESS] User already connected (details submitted) - skipping ask_to_connect")
+            
             client, model = _get_openai_client()
             if not client or not model:
                 # Fallback: simple heuristic
-                return self._simple_followup_check(assistant_message, user_message, should_ask_for_name, current_name)
+                return self._simple_followup_check(assistant_message, user_message, should_ask_for_name, current_name, already_connected)
             
             # Extract key topics from assistant message for dynamic message generation
             assistant_lower = assistant_message.lower()
@@ -2712,12 +2737,19 @@ KEY TOPICS DISCUSSED: {topics_str}
 TOTAL MESSAGES IN CONVERSATION: {len(conversation_history)}
 SHOULD ASK FOR NAME: {should_ask_for_name}
 CURRENT NAME: {current_name if current_name else "Not provided"}
+USER ALREADY CONNECTED: {already_connected}
 
 TASK:
 Decide which ONE type of follow-up message to send (only ONE per response). Use the FULL conversation history to understand context and flow. Be professional but approachable - think of a friendly, modern professional tone.
 
+CRITICAL RULE - USER ALREADY CONNECTED:
+- If USER ALREADY CONNECTED is True, the user has ALREADY submitted their details and been connected to our team
+- In this case, NEVER use "ask_to_connect" - they are already connected!
+- Just answer their questions and use "follow_up" or "" (empty) as appropriate
+- Do NOT offer team connection again - it's redundant and confusing
+
 DECISION LOGIC (BALANCED PRIORITY):
-1. "ask_to_connect" - PRIORITIZE when:
+1. "ask_to_connect" - PRIORITIZE when (ONLY if USER ALREADY CONNECTED is False):
    - User asked about benefits, pricing, costs, savings, getting started, or shows strong interest
    - User asked "how does it work" or "what are the benefits" - these are conversion opportunities
    - Conversation has depth (3+ messages) and user is engaged
@@ -2820,6 +2852,11 @@ If message_type is empty string, message should be null."""
             message_type = result_data.get("message_type", "")
             message = result_data.get("message", "")
             
+            # CRITICAL: If user is already connected, NEVER use "ask_to_connect"
+            if already_connected and message_type == "ask_to_connect":
+                logger.info("[FOLLOWUP] User already connected - overriding ask_to_connect to empty")
+                return "", ""
+            
             if message_type and message:
                 # Validate token count (approximately 4 characters per token, so 60 tokens ≈ 240 characters)
                 # This is a rough estimate - actual token count may vary
@@ -2853,7 +2890,7 @@ If message_type is empty string, message should be null."""
         except Exception as e:
             logger.error(f"[FOLLOWUP] Error analyzing for follow-up message: {str(e)}", exc_info=True)
             # Fallback to simple heuristic
-            return self._simple_followup_check(assistant_message, user_message, should_ask_for_name, current_name)
+            return self._simple_followup_check(assistant_message, user_message, should_ask_for_name, current_name, already_connected)
     
     def _remove_followup_phrases(self, text: str) -> str:
         """
@@ -2946,7 +2983,7 @@ If message_type is empty string, message should be null."""
         
         return cleaned_text
     
-    def _simple_followup_check(self, assistant_message: str, user_message: str, should_ask_for_name: bool, current_name: str) -> Tuple[str, str]:
+    def _simple_followup_check(self, assistant_message: str, user_message: str, should_ask_for_name: bool, current_name: str, already_connected: bool = False) -> Tuple[str, str]:
         """Simple heuristic fallback for follow-up message decision. Balanced priority."""
         import random
         
@@ -2969,11 +3006,12 @@ If message_type is empty string, message should be null."""
         
         # BALANCED DECISION LOGIC:
         # 1. Check team connection first (conversion goal) if user shows interest
+        #    BUT ONLY if user is NOT already connected
         strong_interest_keywords = ['benefit', 'cost', 'price', 'saving', 'how does', 'how can', 'get started', 'interested', 'explore', 'learn more']
         conversion_keywords = ['benefit', 'cost', 'price', 'saving', 'get started', 'interested']
         
-        # If user asked about conversion topics, prioritize team connection
-        if any(keyword in user_lower for keyword in conversion_keywords) and len(assistant_message) > 100:
+        # If user asked about conversion topics, prioritize team connection (ONLY if not already connected)
+        if not already_connected and any(keyword in user_lower for keyword in conversion_keywords) and len(assistant_message) > 100:
             if topic:
                 team_messages = [
                     f"Would you like to connect with our team to explore how {topic} could work for you? They can provide personalised assistance!",
@@ -3003,7 +3041,8 @@ If message_type is empty string, message should be null."""
                 return "ask_name", random.choice(name_messages)
         
         # 3. Check team connection for general interest (if not already checked)
-        if any(keyword in user_lower for keyword in strong_interest_keywords) and len(assistant_message) > 100:
+        #    BUT ONLY if user is NOT already connected
+        if not already_connected and any(keyword in user_lower for keyword in strong_interest_keywords) and len(assistant_message) > 100:
             if topic:
                 team_messages = [
                     f"Would you like to connect with our team to explore how {topic} could work for you? They can provide personalised assistance!",

@@ -600,21 +600,27 @@ def final_node(state) -> AgentState:
 
         # Get user name from session for personalization
         user_name = ""
+        first_name = ""
         try:
             session = Session.objects.filter(id=state.session_id).first()
             if session and session.conversation_data:
                 user_name = session.conversation_data.get('name', '')
                 if user_name:
-                    logger.info(f"[PERSONALIZATION] Found user name: {user_name}")
+                    # Extract first name only (more natural in conversation)
+                    first_name = user_name.strip().split()[0] if user_name.strip() else ""
+                    logger.info(f"[PERSONALIZATION] Found user name: {user_name}, using first name: {first_name}")
         except Exception as e:
             logger.warning(f"[PERSONALIZATION] Could not get user name: {str(e)}")
+
+        # Use first name for personalization (more natural than full name)
+        name_to_use = first_name if first_name else (user_name if user_name else "Not provided")
 
         # Create synthesis prompt with enhanced instructions for no-answer scenarios
         synthesis_prompt = FINAL_SYNTHESIS_PROMPT.format(
             tool_result=tool_result_str,
             conversation_context=conversation_context,
             user_question=user_question,
-            user_name=user_name if user_name else "Not provided"
+            user_name=name_to_use
         )
         
         # If no relevant results found or validation failed, enhance the prompt with specific instructions
