@@ -62,7 +62,7 @@ def get_greeting_response(message: str) -> str:
     
     # Greeting responses with professional Australian accent
     if re.match(r'^(hi|hello|hey|greetings|good morning|good afternoon|good evening|good day|hi there|hello there)', message_clean):
-        return """Hello! 👋 I'm Alex AI, your friendly assistant here at WhipSmart. I'm here to help you with everything related to electric vehicle leasing and novated leases.
+        return """Hello! 👋 I'm Whip-E AI, your friendly assistant here at WhipSmart. I'm here to help you with everything related to electric vehicle leasing and novated leases.
 
 I can help you with:
 • Understanding novated leases and how they work
@@ -89,7 +89,7 @@ What would you like to know about EV leasing or novated leases?"""
     
     # Default greeting response with professional Australian accent
     else:
-        return """Hello! 👋 I'm Alex AI, your friendly assistant here at WhipSmart. I'm here to help you with everything related to electric vehicle leasing and novated leases.
+        return """Hello! 👋 I'm Whip-E AI, your friendly assistant here at WhipSmart. I'm here to help you with everything related to electric vehicle leasing and novated leases.
 
 I can help you with:
 • Understanding novated leases and how they work

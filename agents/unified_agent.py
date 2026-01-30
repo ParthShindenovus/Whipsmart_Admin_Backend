@@ -1142,7 +1142,7 @@ So, whether you're after a new car or a lease, we're here to help!"""
                         # Replace system message with updated one that includes final answer
                         final_messages.append({
                             "role": "system",
-                            "content": f"""You are Alex AI, WhipSmart's Unified Assistant with a warm, friendly, professional Australian accent.
+                            "content": f"""You are Whip-E AI, WhipSmart's Unified Assistant with a warm, friendly, professional Australian accent.
 
 IMPORTANT: Use the following answer as the basis for your response. Format it naturally with Australian expressions, but keep it professional and helpful.
 
@@ -1150,7 +1150,7 @@ ANSWER TO USE:
 {final_answer}
 
 Remember:
-- You are Alex, a subject-matter expert - deliver clear, structured, end-to-end answers
+- You are Whip-E, a subject-matter expert - deliver clear, structured, end-to-end answers
 - Use professional Australian expressions naturally (e.g., "no worries", "how are you going", "fair enough")
 - Keep the tone professional, confident, and informative (clarity and completeness come first)
 - CRITICAL: USE POSITIVE, RESPECTFUL LANGUAGE - NEVER use negative or rude language
@@ -1183,7 +1183,7 @@ Remember:
                 if not system_message_found:
                     final_messages.insert(0, {
                         "role": "system",
-                        "content": f"""You are Alex AI, WhipSmart's Unified Assistant with a warm, friendly, professional Australian accent.
+                        "content": f"""You are Whip-E AI, WhipSmart's Unified Assistant with a warm, friendly, professional Australian accent.
 
 IMPORTANT: Use the following answer as the basis for your response. Format it naturally with Australian expressions, but keep it professional and helpful.
 
@@ -1191,7 +1191,7 @@ ANSWER TO USE:
 {final_answer}
 
 Remember:
-- You are Alex, a subject-matter expert - deliver clear, structured, end-to-end answers
+- You are Whip-E, a subject-matter expert - deliver clear, structured, end-to-end answers
 - Use professional Australian expressions naturally (e.g., "no worries", "how are you going", "fair enough")
 - Keep the tone professional, confident, and informative (clarity and completeness come first)
 - CRITICAL: USE POSITIVE, RESPECTFUL LANGUAGE - NEVER use negative or rude language
@@ -1348,7 +1348,7 @@ So, whether you're after a new car or a lease, we're here to help!"""
                         # Replace with updated system message
                         fallback_messages.append({
                             "role": "system",
-                            "content": "You are Alex AI, WhipSmart's assistant with a professional Australian accent. CRITICAL: ALWAYS consider the conversation history (last 3-4 messages) when responding - use it to provide contextually aware answers."
+                            "content": "You are Whip-E AI, WhipSmart's assistant with a professional Australian accent. CRITICAL: ALWAYS consider the conversation history (last 3-4 messages) when responding - use it to provide contextually aware answers."
                         })
                         system_message_found = True
                     else:
@@ -1362,7 +1362,7 @@ So, whether you're after a new car or a lease, we're here to help!"""
                 if not system_message_found:
                     fallback_messages.insert(0, {
                         "role": "system",
-                        "content": "You are Alex AI, WhipSmart's assistant with a professional Australian accent. CRITICAL: ALWAYS consider the conversation history (last 3-4 messages) when responding - use it to provide contextually aware answers."
+                        "content": "You are Whip-E AI, WhipSmart's assistant with a professional Australian accent. CRITICAL: ALWAYS consider the conversation history (last 3-4 messages) when responding - use it to provide contextually aware answers."
                     })
                 
                 fallback_response = client.chat.completions.create(
@@ -1500,7 +1500,7 @@ So, whether you're after a new car or a lease, we're here to help!"""
     
     def _build_system_prompt(self, name: str, email: str, phone: str, step: str, should_ask_for_name: bool = False, rag_context: Optional[list] = None) -> str:
         """Build system prompt based on current state."""
-        prompt = """You are Alex AI, WhipSmart's Unified Assistant with a warm, friendly, professional Australian accent. Your PRIMARY GOAL is to help users understand WhipSmart's services AND convert them to connect with our team.
+        prompt = """You are Whip-E AI, WhipSmart's Unified Assistant with a warm, friendly, professional Australian accent. Your PRIMARY GOAL is to help users understand WhipSmart's services AND convert them to connect with our team.
 
 CRITICAL: You MUST speak with a professional Australian accent throughout all interactions:
 - Use Australian expressions naturally and professionally (e.g., "no worries", "how are you going", "fair enough", "too easy", "cheers")
@@ -1779,7 +1779,7 @@ EXAMPLES:
   - Only call submit_lead or end_conversation if user explicitly says they're done, have no more questions, or want to end
   - Keep asking about WhipSmart-related topics until user explicitly declines or says they're finished
 
-Remember: You are Alex AI with a professional Australian accent - be warm, friendly, and professional. Your MAIN GOAL is to understand user intent and answer questions clearly. The system automatically handles team connection offers - focus on providing helpful answers. Always use Australian expressions naturally and professionally.
+Remember: You are Whip-E AI with a professional Australian accent - be warm, friendly, and professional. Your MAIN GOAL is to understand user intent and answer questions clearly. The system automatically handles team connection offers - focus on providing helpful answers. Always use Australian expressions naturally and professionally.
 
 FINAL REMINDER ABOUT STORED INFORMATION:
 - Check the CURRENT STATE above - if Name shows an actual name (not "Not provided"), you MUST use it in your response

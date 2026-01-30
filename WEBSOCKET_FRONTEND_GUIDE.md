@@ -720,7 +720,7 @@ ws.setOnMessage((data) => {
 // Test message
 setTimeout(() => {
     ws.sendMessage(
-        'Hello, Alex AI!',
+        'Hello, Whip-E AI!',
         'your-session-id',
         'your-visitor-id'
     );

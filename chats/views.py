@@ -260,7 +260,7 @@ class SessionViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
     
     def create(self, request, *args, **kwargs):
         """
-        Create a new session with initial Alex AI greeting message.
+        Create a new session with initial Whip-E AI greeting message.
         Optimized for fast session creation - uses bulk operations and avoids extra queries.
         """
         serializer = self.get_serializer(data=request.data or {})
@@ -1087,8 +1087,8 @@ class ChatMessageViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
             )
     
     @extend_schema(
-        summary="Get Alex AI greeting (Test endpoint)",
-        description="Get the current Alex AI greeting message based on Melbourne timezone. This is a test endpoint to preview the greeting without creating a session. The greeting changes based on time of day and day of week.",
+        summary="Get Whip-E AI greeting (Test endpoint)",
+        description="Get the current Whip-E AI greeting message based on Melbourne timezone. This is a test endpoint to preview the greeting without creating a session. The greeting changes based on time of day and day of week.",
         responses={
             200: {
                 'type': 'object',
@@ -1112,7 +1112,7 @@ class ChatMessageViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
             permission_classes=[AllowAny])
     def greeting(self, request):
         """
-        Test endpoint to get the current Alex AI greeting.
+        Test endpoint to get the current Whip-E AI greeting.
         Returns the greeting message that would be sent when creating a new session.
         Useful for testing greeting logic in Swagger.
         """

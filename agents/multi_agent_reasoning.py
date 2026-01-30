@@ -395,7 +395,7 @@ Be strict and focused - only what exists today and is explicitly in the provided
         """
         context_text = self._format_rag_context(rag_context)
         
-        prompt = f"""You are Alex AI, WhipSmart's expert assistant. Generate a structured, comprehensive answer.
+        prompt = f"""You are Whip-E AI, WhipSmart's expert assistant. Generate a structured, comprehensive answer.
 
 USER QUESTION: {user_question}
 
@@ -507,7 +507,7 @@ Generate the answer now:"""
                 messages=[
                     {
                         "role": "system",
-                        "content": """You are Alex AI, WhipSmart's expert assistant with a professional Australian accent.
+                        "content": """You are Whip-E AI, WhipSmart's expert assistant with a professional Australian accent.
 You generate clear, structured, CONCISE answers that fully address user questions.
 You follow Answer Quality Layer guidelines: lifecycle coverage, concrete details, but keep answers SHORT.
 You apply Answer Density & Discipline: concise high-value statements, no repetition, no filler.
@@ -542,7 +542,7 @@ CRITICAL: COMPLETENESS REQUIREMENT - Always provide a complete, finished answer.
                     messages=[
                         {
                             "role": "system",
-                            "content": """You are Alex AI, WhipSmart's expert assistant with a professional Australian accent.
+                            "content": """You are Whip-E AI, WhipSmart's expert assistant with a professional Australian accent.
 You generate clear, structured, CONCISE answers that fully address user questions.
 You follow Answer Quality Layer guidelines: lifecycle coverage, concrete details, but keep answers SHORT.
 You apply Answer Density & Discipline: concise high-value statements, no repetition, no filler.
@@ -678,7 +678,7 @@ FIX_REQUIRED: [If STATUS is FIX_REQUIRED, list specific missing items to ADD or 
         assembled_prompt: str
     ) -> str:
         """Apply fixes to the draft answer based on validation feedback."""
-        fix_prompt = f"""You are Alex AI, WhipSmart's expert assistant.
+        fix_prompt = f"""You are Whip-E AI, WhipSmart's expert assistant.
 
 DRAFT ANSWER:
 {draft_answer}
@@ -725,7 +725,7 @@ Generate the fixed answer now:"""
                 messages=[
                     {
                         "role": "system",
-                        "content": """You are Alex AI, WhipSmart's expert assistant with a professional Australian accent.
+                        "content": """You are Whip-E AI, WhipSmart's expert assistant with a professional Australian accent.
 You apply fixes to answers based on validation feedback.
 You ONLY add missing items or remove unsupported items - do NOT introduce new ideas or expand scope.
 Keep answers SHORT and concise.
@@ -756,7 +756,7 @@ GOLD STANDARD — STYLE & DISCIPLINE:
                     messages=[
                         {
                             "role": "system",
-                            "content": """You are Alex AI, WhipSmart's expert assistant with a professional Australian accent.
+                            "content": """You are Whip-E AI, WhipSmart's expert assistant with a professional Australian accent.
 You apply fixes to answers based on validation feedback.
 You ONLY add missing items or remove unsupported items - do NOT introduce new ideas or expand scope.
 Keep answers SHORT and concise.

@@ -1,5 +1,5 @@
 """
-Alex AI - Smart Greeting Rules
+Whip-E AI - Smart Greeting Rules
 Generates time and day-based greetings with Australian accent.
 Uses Melbourne timezone (Australia/Melbourne) for accurate time-based greetings.
 """
@@ -26,7 +26,7 @@ def _get_melbourne_time():
 
 def get_alex_greeting() -> str:
     """
-    Generate an Alex AI greeting based on current time in Melbourne timezone.
+    Generate an Whip-E AI greeting based on current time in Melbourne timezone.
     Returns a greeting message with professional Australian accent.
     Only time-based greetings (no day greetings).
     """
@@ -96,7 +96,7 @@ def _normalize_newlines(text: str) -> str:
 
 def get_full_alex_greeting() -> str:
     """
-    Get a full Alex AI greeting with introduction.
+    Get a full Whip-E AI greeting with introduction.
     Uses only time-based greeting (no day greetings).
     Properly formatted for UI display with markdown formatting (bold, line breaks).
     Uses Melbourne timezone for accurate time-based greetings.
@@ -127,7 +127,7 @@ def get_full_alex_greeting() -> str:
     message_lines.append("")
     
     # Add introduction with bold for name and company
-    intro = "I'm **Alex AI**, your friendly assistant here at **WhipSmart**."
+    intro = "I'm **Whip-E AI**, your friendly assistant here at **WhipSmart**."
     message_lines.append(intro)
     
     intro2 = "I'm here to help you with everything related to electric vehicle leasing and novated leases."
