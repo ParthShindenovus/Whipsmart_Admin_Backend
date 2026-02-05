@@ -9,8 +9,8 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from channels.layers import get_channel_layer
 from django.utils import timezone
+from django.conf import settings
 from .models import Session, Visitor, ChatMessage
-from agents.unified_agent import UnifiedAgent
 from agents.session_manager import session_manager
 
 logger = logging.getLogger(__name__)
@@ -485,13 +485,23 @@ class ChatConsumer(AsyncWebsocketConsumer):
         return await database_sync_to_async(_get_message)()
     
     async def process_and_stream_response(self, session, user_message_text, user_message_obj):
-        """Process message using UnifiedAgent and stream response."""
+        """Process message using LangGraph agent and stream response."""
         try:
-            # Use UnifiedAgent to process the message
-            agent = UnifiedAgent(session)
+            # Determine which agent to use based on settings
+            use_langgraph = getattr(settings, 'USE_LANGGRAPH_AGENT', True)
             
-            # Process message synchronously (UnifiedAgent is synchronous)
-            result = await database_sync_to_async(agent.handle_message)(user_message_text)
+            if use_langgraph:
+                # Use new LangGraph agent
+                from agents.langgraph_agent.integration import ChatAPIIntegration
+                result = await database_sync_to_async(ChatAPIIntegration.process_message)(
+                    str(session.id),
+                    user_message_text
+                )
+            else:
+                # Use old UnifiedAgent (fallback)
+                from agents.unified_agent import UnifiedAgent
+                agent = UnifiedAgent(session)
+                result = await database_sync_to_async(agent.handle_message)(user_message_text)
             
             assistant_message_text = result.get('message', '')  # Already post-processed (follow-up phrases removed)
             

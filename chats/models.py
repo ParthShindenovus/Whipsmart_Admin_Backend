@@ -150,3 +150,73 @@ class ChatMessage(models.Model):
             self.session.last_message = self.message[:500]  # Limit to 500 chars for preview
             self.session.last_message_at = self.timestamp
             self.session.save(update_fields=['last_message', 'last_message_at'])
+
+
+class MessageSuggestion(models.Model):
+    """
+    Model for storing suggestions generated for assistant messages.
+    Each assistant message can have multiple suggestions for follow-up questions.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    message = models.ForeignKey(
+        ChatMessage,
+        on_delete=models.CASCADE,
+        related_name='suggestions',
+        help_text="The assistant message this suggestion belongs to"
+    )
+    suggestion_text = models.CharField(
+        max_length=200,
+        help_text="The suggestion text displayed to the user"
+    )
+    suggestion_type = models.CharField(
+        max_length=50,
+        choices=[
+            ('rag_related', 'RAG Related Question'),
+            ('contextual', 'Contextual Suggestion'),
+            ('conversion', 'Conversion Action'),
+            ('fallback', 'Fallback Suggestion'),
+        ],
+        default='contextual',
+        help_text="Type of suggestion generated"
+    )
+    order = models.PositiveSmallIntegerField(
+        default=0,
+        help_text="Display order of the suggestion (0-based)"
+    )
+    is_clicked = models.BooleanField(
+        default=False,
+        help_text="Whether this suggestion was clicked by the user"
+    )
+    clicked_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the suggestion was clicked"
+    )
+    metadata = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Additional metadata like RAG sources, generation method, etc."
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    
+    class Meta:
+        verbose_name = "Message Suggestion"
+        verbose_name_plural = "Message Suggestions"
+        ordering = ['message', 'order']
+        indexes = [
+            models.Index(fields=['message', 'order']),
+            models.Index(fields=['suggestion_type']),
+            models.Index(fields=['is_clicked']),
+            models.Index(fields=['created_at']),
+        ]
+        unique_together = [['message', 'order']]
+    
+    def __str__(self):
+        return f"Suggestion for {self.message.id}: {self.suggestion_text[:50]}..."
+    
+    def mark_clicked(self):
+        """Mark this suggestion as clicked."""
+        if not self.is_clicked:
+            self.is_clicked = True
+            self.clicked_at = timezone.now()
+            self.save(update_fields=['is_clicked', 'clicked_at'])

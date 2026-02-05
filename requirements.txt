@@ -6,23 +6,46 @@ django-filter==24.3
 drf-spectacular>=0.27.0
 psycopg2-binary>=2.9.9
 mysqlclient>=2.2.0
-pinecone>=5.0.0
-langgraph>=0.2.12
+
+# LangChain and LangGraph - Core AI/ML Framework
+langchain>=0.1.0
+langchain-core>=0.1.0
 langchain-openai>=0.2.2
+langgraph>=0.2.12
+langsmith>=0.1.0
+
+# Vector Database and RAG
+pinecone>=5.0.0
+
+# Document Processing
 PyPDF2>=3.0.1
 pdfplumber>=0.11.0
 python-docx>=1.1.2
 beautifulsoup4>=4.12.0
+
+# OpenAI and LLM
 openai>=1.0.0
+
+# Utilities
 python-decouple>=3.8
 requests>=2.31.0
 spacy>=3.7.0
+
+# Web Server and Deployment
 gunicorn>=21.2.0
 whitenoise>=6.6.0
+
+# WebSocket and Real-time
 channels>=4.0.0
 channels-redis>=4.1.0
 uvicorn[standard]>=0.30.0
+
+# Knowledge Graph
 neo4j~=5.28.0
+
+# CRM Integration
 hubspot-api-client>=9.0.0
+
+# Logging
 loguru>=0.7.0
 

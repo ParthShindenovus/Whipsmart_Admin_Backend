@@ -348,6 +348,14 @@ USE_NEO4J = config('USE_NEO4J', default=False, cast=bool)  # Enable Neo4j instea
 # HubSpot settings
 HUBSPOT_ACCESS_TOKEN = config('HUBSPOT_ACCESS_TOKEN', default='')
 
+# LangGraph Agent settings
+# Set to True to use the new LangGraph agent instead of UnifiedAgent
+USE_LANGGRAPH_AGENT = config('USE_LANGGRAPH_AGENT', default=True, cast=bool)
+
+# LangChain settings (optional)
+LANGCHAIN_TRACING_V2 = config('LANGCHAIN_TRACING_V2', default=False, cast=bool)
+LANGCHAIN_API_KEY = config('LANGCHAIN_API_KEY', default='')
+
 # Cloud Storage Configuration (for future use)
 # Currently using local media folder, but ready for cloud storage
 USE_CLOUD_STORAGE = config('USE_CLOUD_STORAGE', default=False, cast=bool)

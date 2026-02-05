@@ -9,6 +9,7 @@ from drf_spectacular.utils import extend_schema_view, extend_schema, OpenApiPara
 from drf_spectacular.types import OpenApiTypes
 from django.http import StreamingHttpResponse, Http404
 from django.utils import timezone
+from django.conf import settings
 from django.db.models import Q
 import json
 import logging
@@ -18,7 +19,7 @@ from agents.graph import get_graph
 from agents.session_manager import session_manager
 from agents.state import AgentState
 from agents.suggestions import generate_suggestions
-from agents.unified_agent import UnifiedAgent
+from agents.langgraph_agent.integration import ChatAPIIntegration
 from core.views_base import StandardizedResponseMixin
 from core.utils import success_response, error_response
 from widget.authentication import APIKeyAuthentication
@@ -663,11 +664,17 @@ class ChatMessageViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
             # Save user message to database
             session_manager.save_user_message(session_id, message)
             
-            # Use unified agent (no conversation_type needed)
-            agent = UnifiedAgent(session)
+            # Determine which agent to use based on settings
+            use_langgraph = getattr(settings, 'USE_LANGGRAPH_AGENT', True)
             
-            # Handle message
-            result = agent.handle_message(message)
+            if use_langgraph:
+                # Use new LangGraph agent
+                result = ChatAPIIntegration.process_message(str(session.id), message)
+            else:
+                # Use old UnifiedAgent (fallback)
+                from agents.unified_agent import UnifiedAgent
+                agent = UnifiedAgent(session)
+                result = agent.handle_message(message)
             
             assistant_message_text = result['message']  # Already post-processed (follow-up phrases removed)
             
@@ -1141,3 +1148,125 @@ class ChatMessageViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
             },
             message="Greeting generated successfully"
         )
+    
+    @extend_schema(
+        summary="Get suggestion analytics for a session",
+        description="Get analytics about suggestions generated and clicked for a specific session. Includes click rates, suggestion types, and detailed breakdown.",
+        parameters=[
+            OpenApiParameter(
+                name='session_id',
+                type=OpenApiTypes.UUID,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description='Session ID to get suggestion analytics for'
+            ),
+        ],
+        responses={
+            200: {
+                'type': 'object',
+                'properties': {
+                    'session_id': {'type': 'string'},
+                    'total_suggestions': {'type': 'integer'},
+                    'clicked_suggestions': {'type': 'integer'},
+                    'click_rate': {'type': 'number', 'description': 'Click rate as percentage'},
+                    'type_breakdown': {
+                        'type': 'object',
+                        'description': 'Breakdown by suggestion type'
+                    },
+                    'recent_suggestions': {
+                        'type': 'array',
+                        'description': 'Last 10 suggestions with details'
+                    }
+                }
+            },
+            400: {'description': 'Bad request - session_id missing'},
+            404: {'description': 'Not found - session does not exist'}
+        },
+        tags=['Messages'],
+    )
+    @action(detail=False, methods=['get'], url_path='suggestion-analytics',
+            authentication_classes=[],
+            permission_classes=[AllowAny])
+    def suggestion_analytics(self, request):
+        """
+        Get analytics about suggestions for a specific session.
+        
+        Query Parameters:
+        - session_id (required): Session ID to get analytics for
+        
+        Returns detailed analytics about suggestions generated and clicked.
+        """
+        session_id = request.query_params.get('session_id')
+        
+        if not session_id:
+            return error_response(
+                'session_id is required as query parameter',
+                status_code=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Validate session
+        session, error_response_obj = validate_session(session_id)
+        if error_response_obj:
+            return error_response_obj
+        
+        try:
+            from chats.models import MessageSuggestion
+            
+            # Get all suggestions for this session
+            suggestions = MessageSuggestion.objects.filter(
+                message__session=session
+            ).select_related('message').order_by('-created_at')
+            
+            total_suggestions = suggestions.count()
+            clicked_suggestions = suggestions.filter(is_clicked=True).count()
+            
+            # Calculate click rate
+            click_rate = (clicked_suggestions / total_suggestions * 100) if total_suggestions > 0 else 0
+            
+            # Group by type
+            type_breakdown = {}
+            for suggestion in suggestions:
+                suggestion_type = suggestion.suggestion_type
+                if suggestion_type not in type_breakdown:
+                    type_breakdown[suggestion_type] = {'total': 0, 'clicked': 0}
+                type_breakdown[suggestion_type]['total'] += 1
+                if suggestion.is_clicked:
+                    type_breakdown[suggestion_type]['clicked'] += 1
+            
+            # Add click rates to type breakdown
+            for type_name, data in type_breakdown.items():
+                data['click_rate'] = (data['clicked'] / data['total'] * 100) if data['total'] > 0 else 0
+            
+            # Get recent suggestions (last 10)
+            recent_suggestions = []
+            for suggestion in suggestions[:10]:
+                recent_suggestions.append({
+                    'id': str(suggestion.id),
+                    'text': suggestion.suggestion_text,
+                    'type': suggestion.suggestion_type,
+                    'order': suggestion.order,
+                    'is_clicked': suggestion.is_clicked,
+                    'clicked_at': suggestion.clicked_at.isoformat() if suggestion.clicked_at else None,
+                    'created_at': suggestion.created_at.isoformat(),
+                    'message_preview': suggestion.message.message[:100] + '...' if len(suggestion.message.message) > 100 else suggestion.message.message,
+                    'metadata': suggestion.metadata
+                })
+            
+            return success_response(
+                {
+                    'session_id': str(session_id),
+                    'total_suggestions': total_suggestions,
+                    'clicked_suggestions': clicked_suggestions,
+                    'click_rate': round(click_rate, 2),
+                    'type_breakdown': type_breakdown,
+                    'recent_suggestions': recent_suggestions
+                },
+                message=f"Analytics for {total_suggestions} suggestions with {click_rate:.1f}% click rate"
+            )
+            
+        except Exception as e:
+            logger.error(f"Error getting suggestion analytics: {str(e)}", exc_info=True)
+            return error_response(
+                "Failed to get suggestion analytics",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
