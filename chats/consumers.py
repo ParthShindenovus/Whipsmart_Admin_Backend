@@ -167,26 +167,46 @@ class ChatConsumer(AsyncWebsocketConsumer):
             else:
                 logger.info(f"[WEBSOCKET] [IDLE_TIMER] Reusing existing idle timeout state for session: {self.session_id}")
             
-            # Send connection confirmation with standardized schema
+            # Send connection confirmation with standardized schema and initial suggestions
             try:
-                def get_session_data():
+                def get_session_data_and_suggestions():
                     try:
                         session = Session.objects.get(id=self.session_id)
-                        return session.conversation_data
+                        conversation_data = session.conversation_data or {}
+                        
+                        # Check if we're collecting user info - if so, no suggestions
+                        collecting_info = conversation_data.get('collecting_user_info', False)
+                        if collecting_info:
+                            suggestions = []
+                        else:
+                            # Provide initial suggestions for new conversations
+                            suggestions = [
+                                "What is a novated lease?",
+                                "What are the benefits?",
+                                "How does it work?"
+                            ]
+                        
+                        return conversation_data, suggestions
                     except Session.DoesNotExist:
-                        return None
+                        return None, []
                 
-                conversation_data = await database_sync_to_async(get_session_data)()
+                conversation_data, suggestions = await database_sync_to_async(get_session_data_and_suggestions)()
                 connected_message = self.format_message(
                     'connected',
                     message=None,
                     conversation_data=conversation_data,
+                    suggestions=suggestions,
                     metadata={'status': 'connected', 'reused_connection': connection_key in _session_idle_state}
                 )
             except Exception:
                 connected_message = self.format_message(
                     'connected',
                     message=None,
+                    suggestions=[
+                        "What is a novated lease?",
+                        "What are the benefits?",
+                        "How does it work?"
+                    ],
                     metadata={'status': 'connected'}
                 )
         else:

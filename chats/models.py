@@ -14,6 +14,12 @@ class Visitor(models.Model):
     last_seen_at = models.DateTimeField(auto_now=True, help_text="Last time visitor was active")
     metadata = models.JSONField(default=dict, blank=True, help_text="Browser info, IP, etc.")
     
+    # User contact information (collected after 3 questions)
+    name = models.CharField(max_length=255, blank=True, null=True, help_text="Visitor's full name")
+    email = models.EmailField(blank=True, null=True, help_text="Visitor's email address")
+    phone = models.CharField(max_length=20, blank=True, null=True, help_text="Visitor's phone number")
+    questions_asked = models.IntegerField(default=0, help_text="Number of questions asked by this visitor across all sessions")
+    
     class Meta:
         verbose_name = "Visitor"
         verbose_name_plural = "Visitors"
@@ -68,6 +74,10 @@ class Session(models.Model):
         default=dict,
         blank=True,
         help_text="Stores conversation-specific data (e.g., name, email, phone for sales/support)"
+    )
+    questions_asked = models.IntegerField(
+        default=0,
+        help_text="Number of questions asked in this session"
     )
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField(null=True, blank=True, help_text="Session expiration time (24h default, auto-set if not provided)")
