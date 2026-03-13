@@ -220,6 +220,135 @@ class UnifiedAgent:
                 'escalate_to': None
             }
         
+        # NEW: Check session's question count and enforce 3-question rule
+        from chats.models import Visitor, ChatMessage
+        try:
+            visitor = self.session.visitor
+            
+            # Check if visitor already has all required info
+            visitor_has_info = visitor.name and visitor.email and visitor.phone
+            
+            # Check if we're currently collecting info
+            collecting_info = self.conversation_data.get('collecting_user_info', False)
+            
+            # If we're collecting info, try to extract it from the message
+            if collecting_info:
+                # Try to extract name, email, and phone from the message
+                extracted_info = self._extract_user_info(user_message)
+                
+                # Validate extracted info
+                validation_result = self._validate_and_store_visitor_info(
+                    visitor, 
+                    extracted_info.get('name'),
+                    extracted_info.get('email'),
+                    extracted_info.get('phone')
+                )
+                
+                if validation_result['all_collected']:
+                    # All info collected successfully - end the session
+                    self.conversation_data['collecting_user_info'] = False
+                    self.conversation_data['step'] = 'complete'
+                    self.session.is_active = False
+                    self._save_conversation_data()
+                    self.session.save(update_fields=['is_active', 'conversation_data'])
+                    
+                    first_name = visitor.name.split()[0] if visitor.name else ''
+                    return {
+                        'message': f"Thank you so much{', ' + first_name if first_name else ''}! I've got your details. Our team will be in touch with you shortly. Have a wonderful day!",
+                        'suggestions': [],  # No suggestions when ending session
+                        'complete': True,
+                        'needs_info': None,
+                        'escalate_to': None
+                    }
+                elif validation_result['errors']:
+                    # Some validation errors
+                    error_msg = " ".join(validation_result['errors'])
+                    return {
+                        'message': f"I appreciate you sharing that information! However, {error_msg.lower()} Could you please provide the correct details?",
+                        'suggestions': [],
+                        'complete': False,
+                        'needs_info': 'name_email_phone',
+                        'escalate_to': None
+                    }
+                else:
+                    # Partial info collected, ask for missing fields
+                    missing = validation_result['missing']
+                    if len(missing) == 1:
+                        missing_str = missing[0]
+                        return {
+                            'message': f"Thank you! I just need your {missing_str} to complete the connection. Could you please share that?",
+                            'suggestions': [],
+                            'complete': False,
+                            'needs_info': 'name_email_phone',
+                            'escalate_to': None
+                        }
+                    else:
+                        missing_str = " and ".join(missing)
+                        return {
+                            'message': f"Thank you! I still need your {missing_str} to connect you with our team. Could you please provide those?",
+                            'suggestions': [],
+                            'complete': False,
+                            'needs_info': 'name_email_phone',
+                            'escalate_to': None
+                        }
+            
+            # Increment question count for THIS SESSION
+            self.session.questions_asked += 1
+            self.session.save(update_fields=['questions_asked'])
+            total_questions = self.session.questions_asked
+            
+            logger.info(f"[QUESTION_COUNT] Session {self.session.id} has asked {total_questions} questions (just incremented)")
+            
+            # If 3 questions have been asked
+            if total_questions >= 3:
+                logger.info(f"[QUESTION_COUNT] Threshold reached for session {self.session.id}")
+                
+                # Check if visitor already has info
+                if visitor_has_info:
+                    # Visitor already has info - just ask if they want to connect
+                    logger.info(f"[QUESTION_COUNT] Visitor already has info - asking if they want to connect")
+                    
+                    # Provide answer to their question
+                    brief_answer = self._get_better_brief_answer(user_message)
+                    
+                    # Ask if they want to connect
+                    first_name = visitor.name.split()[0] if visitor.name else ''
+                    connect_message = f"I have your contact details on file{', ' + first_name if first_name else ''}. Would you like me to connect you with our team for more personalized assistance?"
+                    
+                    return {
+                        'message': brief_answer,
+                        'suggestions': [],
+                        'complete': False,
+                        'needs_info': None,
+                        'escalate_to': None,
+                        'followup_type': 'ask_to_connect',
+                        'followup_message': connect_message
+                    }
+                else:
+                    # Visitor doesn't have info - start collecting
+                    logger.info(f"[QUESTION_COUNT] Starting info collection for session {self.session.id}")
+                    self.conversation_data['collecting_user_info'] = True
+                    self._save_conversation_data()
+                    
+                    # Provide answer to their question
+                    brief_answer = self._get_better_brief_answer(user_message)
+                    
+                    # Ask for their details politely
+                    request_message = "I'd love to connect you with our team so they can provide you with more detailed information and personalized assistance! Could you please share your name, email, and phone number?"
+                    
+                    return {
+                        'message': brief_answer,
+                        'suggestions': [],
+                        'complete': False,
+                        'needs_info': None,
+                        'escalate_to': None,
+                        'followup_type': 'request_info',
+                        'followup_message': request_message
+                    }
+        except Exception as e:
+            logger.error(f"Error checking session question count: {str(e)}", exc_info=True)
+            # Continue with normal flow if there's an error
+        
         # Get current state
         full_name = self.conversation_data.get('name', '')
         # Extract first name only for more natural conversation
@@ -2438,6 +2567,10 @@ CRITICAL ACTION ITEMS (MUST FOLLOW - CHECK FLAGS ABOVE):
         # Get conversation history for context (last 3-4 messages)
         conversation_history = self._get_conversation_history(limit=4)
         
+        # CRITICAL: If collecting user info, don't show suggestions
+        if self.conversation_data.get('collecting_user_info', False):
+            return []
+        
         # If user is already in lead collection flow, don't show suggestions
         # NOTE: 'confirmation' step should still show suggestions - continue engaging about WhipSmart topics
         if self.conversation_data.get('step') == 'complete':
@@ -3077,4 +3210,157 @@ If message_type is empty string, message should be null."""
         """Save conversation data to session."""
         self.session.conversation_data = self.conversation_data
         self.session.save(update_fields=['conversation_data'])
+    
+    def _get_brief_answer(self, user_message: str) -> str:
+        """Generate a brief answer to the user's question before asking for their details."""
+        # Simple brief responses for common questions
+        message_lower = user_message.lower()
+        
+        if any(word in message_lower for word in ['price', 'cost', 'how much']):
+            return "Pricing depends on your specific needs and vehicle choice."
+        elif any(word in message_lower for word in ['benefit', 'advantage', 'why']):
+            return "Novated leases offer tax savings and convenience."
+        elif any(word in message_lower for word in ['how', 'process', 'work']):
+            return "The process is straightforward and our team will guide you through it."
+        elif any(word in message_lower for word in ['eligible', 'qualify', 'can i']):
+            return "Most employees are eligible for novated leases."
+        else:
+            return ""
+    
+    def _get_better_brief_answer(self, user_message: str) -> str:
+        """Generate a better contextual brief answer based on the question."""
+        message_lower = user_message.lower()
+        
+        # End of lease questions
+        if any(phrase in message_lower for phrase in ['end of', 'end of lease', 'lease term', 'lease ends', 'after lease', 'when lease ends']):
+            return "At the end of your novated lease term, you have several flexible options: you can pay the residual value and keep the vehicle, trade it in for a new lease, refinance the residual, or return the vehicle. Our team can walk you through each option and help you choose what works best for your situation."
+        
+        # Tax benefits
+        elif any(phrase in message_lower for phrase in ['tax benefit', 'tax saving', 'tax advantage', 'save on tax', 'reduce tax']):
+            return "Novated leases offer significant tax benefits by reducing your taxable income. Lease payments and running costs are deducted from your pre-tax salary, which means you pay less income tax. The exact savings depend on your income level and the vehicle you choose."
+        
+        # Pricing/costs
+        elif any(word in message_lower for word in ['price', 'cost', 'how much', 'expensive', 'afford']):
+            return "The cost of a novated lease depends on the vehicle you choose, your salary, and the lease term. Our team can provide you with a personalized quote based on your specific circumstances and help you understand the potential tax savings."
+        
+        # Benefits
+        elif any(word in message_lower for word in ['benefit', 'advantage', 'why', 'good', 'worth']):
+            return "Novated leases offer several key benefits: tax savings through pre-tax deductions, simplified budgeting with one payment covering all vehicle costs, and flexibility at the end of the lease term. Plus, you get to choose the vehicle you want!"
+        
+        # Process/how it works
+        elif any(word in message_lower for word in ['how', 'process', 'work', 'step', 'apply']):
+            return "The process is straightforward: choose your vehicle, we arrange the lease with your employer, and payments are deducted from your pre-tax salary. Our team handles all the paperwork and ongoing management, making it hassle-free for you."
+        
+        # Eligibility
+        elif any(word in message_lower for word in ['eligible', 'qualify', 'can i', 'who can', 'requirements']):
+            return "Most employees are eligible for novated leases, regardless of whether you work for a private company, government, or not-for-profit organization. The main requirement is that your employer agrees to participate in the arrangement."
+        
+        # Vehicles/EVs
+        elif any(word in message_lower for word in ['vehicle', 'car', 'ev', 'electric', 'tesla', 'available']):
+            return "You can choose from a wide range of vehicles, including electric vehicles (EVs) which offer additional tax benefits. Our team can help you explore available options and find the perfect vehicle for your needs and budget."
+        
+        # Default
+        else:
+            return "That's a great question! Our team can provide you with detailed information tailored to your specific situation."
+
+    
+    def _extract_user_info(self, message: str) -> dict:
+        """Extract name, email, and phone from user message."""
+        import re
+        
+        extracted = {
+            'name': None,
+            'email': None,
+            'phone': None
+        }
+        
+        # Extract email (pattern: word@word.word)
+        email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+        email_match = re.search(email_pattern, message)
+        if email_match:
+            extracted['email'] = email_match.group(0)
+        
+        # Extract phone (pattern: 10+ digits, possibly with spaces/dashes/parentheses)
+        phone_pattern = r'[\d\s\-\(\)]{10,}'
+        phone_matches = re.findall(phone_pattern, message)
+        for match in phone_matches:
+            digits = ''.join(filter(str.isdigit, match))
+            if len(digits) >= 10:
+                extracted['phone'] = digits
+                break
+        
+        # Extract name (remaining text after removing email and phone)
+        # Remove email and phone from message
+        temp_message = message
+        if extracted['email']:
+            temp_message = temp_message.replace(extracted['email'], '')
+        if extracted['phone']:
+            # Remove the phone pattern
+            temp_message = re.sub(r'[\d\s\-\(\)]{10,}', '', temp_message)
+        
+        # Clean up and extract name
+        temp_message = temp_message.strip()
+        # Remove common words
+        temp_message = re.sub(r'\b(my|name|is|email|phone|number|here|this|it|the|a|an)\b', '', temp_message, flags=re.IGNORECASE)
+        temp_message = temp_message.strip()
+        
+        # If there's text left, it's likely the name
+        if temp_message and len(temp_message) > 1:
+            # Clean up extra spaces
+            temp_message = re.sub(r'\s+', ' ', temp_message)
+            extracted['name'] = temp_message.strip()
+        
+        return extracted
+    
+    def _validate_and_store_visitor_info(self, visitor, name, email, phone):
+        """Validate and store user information in Visitor model."""
+        errors = []
+        missing = []
+        updated = []
+        
+        # Validate and store name
+        if name:
+            if self._validate_name(name):
+                visitor.name = name.strip()
+                updated.append('name')
+            else:
+                errors.append("The name you provided doesn't look valid.")
+        elif not visitor.name:
+            missing.append('name')
+        
+        # Validate and store email
+        if email:
+            if self._validate_email(email):
+                visitor.email = email.strip().lower()
+                updated.append('email')
+            else:
+                errors.append("The email address doesn't look valid.")
+        elif not visitor.email:
+            missing.append('email')
+        
+        # Validate and store phone
+        if phone:
+            if self._validate_phone(phone):
+                # Format phone with +61 prefix
+                formatted_phone = format_phone_number(phone)
+                visitor.phone = formatted_phone
+                updated.append('phone')
+            else:
+                errors.append("The phone number doesn't look valid.")
+        elif not visitor.phone:
+            missing.append('phone')
+        
+        # Save visitor if any fields were updated
+        if updated:
+            visitor.save(update_fields=updated)
+        
+        # Check if all info is collected
+        all_collected = visitor.name and visitor.email and visitor.phone
+        
+        return {
+            'all_collected': all_collected,
+            'updated': updated,
+            'missing': missing,
+            'errors': errors
+        }
 

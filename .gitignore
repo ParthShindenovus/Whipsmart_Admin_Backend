@@ -27,6 +27,7 @@ ENV/
 .venv
 .cursor
 docs-personal/
+.kiro/
 
 # Django
 *.log
@@ -63,3 +64,4 @@ htmlcov/
 
 # pyenv
 .python-version
+
