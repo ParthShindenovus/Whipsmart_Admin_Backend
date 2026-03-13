@@ -40,6 +40,9 @@ channels>=4.0.0
 channels-redis>=4.1.0
 uvicorn[standard]>=0.30.0
 
+# Background Tasks
+django-q2
+
 # Knowledge Graph
 neo4j~=5.28.0
 

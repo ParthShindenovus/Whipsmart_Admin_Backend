@@ -151,8 +151,12 @@ class LangGraphAgent:
         return None
     
     def _initialize_state(self, user_message: str) -> AgentState:
-        """Initialize agent state from session."""
+        """Initialize agent state from session and visitor profile."""
         conversation_data = self.session.conversation_data or {}
+        
+        # Refresh visitor data from database to get latest updates
+        self.session.visitor.refresh_from_db()
+        visitor = self.session.visitor
         
         # Get conversation history
         messages = self._get_conversation_history(CONVERSATION_HISTORY_LIMIT)
@@ -166,12 +170,21 @@ class LangGraphAgent:
         state = AgentState(
             session_id=str(self.session.id),
             messages=messages,
-            user_name=conversation_data.get('name'),
-            user_email=conversation_data.get('email'),
-            user_phone=conversation_data.get('phone'),
+            # Get user profile data from visitor instead of conversation_data
+            user_name=visitor.name or conversation_data.get('name'),
+            user_email=visitor.email or conversation_data.get('email'),
+            user_phone=visitor.phone or conversation_data.get('phone'),
             step=conversation_data.get('step', 'chatting'),
             should_ask_for_name=should_ask_for_name,
             should_offer_team_connection=should_offer_team_connection,
+            # Add visitor profile data to state for easy access
+            visitor_profile={
+                'name': visitor.name,
+                'email': visitor.email,
+                'phone': visitor.phone,
+                'ip_address': visitor.ip_address,
+                'last_seen_at': visitor.last_seen_at.isoformat() if visitor.last_seen_at else None
+            }
         )
         
         return state
@@ -287,6 +300,16 @@ class LangGraphAgent:
                 )
                 
                 messages[-1] = {"role": "user", "content": user_prompt}
+            
+            # Check if we need to call tools first
+            tool_result = self._check_and_call_tools(user_message, state)
+            if tool_result:
+                # Update state with tool results
+                state = self._update_state_with_tool_result(state, tool_result)
+                
+                # Add tool result to messages for context
+                tool_context = f"Tool executed: {tool_result.get('tool_name', 'unknown')} - Result: {tool_result.get('result', {})}"
+                messages.append({"role": "system", "content": tool_context})
             
             # Call LLM
             response = self.client.chat.completions.create(
@@ -677,3 +700,232 @@ class LangGraphAgent:
             'needs_info': None,
             'escalate_to': None
         }
+    
+    def _check_and_call_tools(self, user_message: str, state: AgentState) -> Optional[Dict[str, Any]]:
+        """
+        Check if we need to call any tools based on the user message and state.
+        
+        Args:
+            user_message: The user's message
+            state: Current agent state
+            
+        Returns:
+            Tool result dictionary if a tool was called, None otherwise
+        """
+        try:
+            # Check if user provided contact information
+            contact_info = self._extract_contact_info(user_message)
+            if contact_info['has_contact_info']:
+                logger.info(f"Contact information detected, calling collect_user_info tool")
+                return self._call_collect_user_info_tool(state.session_id, contact_info)
+            
+            # Check if we need to submit lead (all info collected and confirmed)
+            if self._should_submit_lead(state):
+                logger.info(f"All info collected, calling submit_lead tool")
+                return self._call_submit_lead_tool(state.session_id)
+            
+            # Check if user is asking domain questions (already handled by RAG in _fetch_rag_context)
+            # No additional tool calls needed for RAG as it's handled separately
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error checking and calling tools: {str(e)}", exc_info=True)
+            return None
+    
+    def _extract_contact_info(self, user_message: str) -> Dict[str, Any]:
+        """
+        Extract contact information from user message.
+        
+        Args:
+            user_message: The user's message
+            
+        Returns:
+            Dictionary with extracted contact info
+        """
+        import re
+        
+        result = {
+            'has_contact_info': False,
+            'name': None,
+            'email': None,
+            'phone': None
+        }
+        
+        # Email pattern
+        email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+        email_match = re.search(email_pattern, user_message)
+        if email_match:
+            result['email'] = email_match.group()
+            result['has_contact_info'] = True
+        
+        # Phone pattern (various formats)
+        phone_pattern = r'(?:\+?61\s?)?(?:\(0\)\s?)?[0-9\s\-\(\)]{8,15}'
+        phone_matches = re.findall(phone_pattern, user_message)
+        if phone_matches:
+            # Clean up the phone number
+            phone = re.sub(r'[^\d+]', '', phone_matches[0])
+            if len(phone) >= 8:  # Minimum valid phone length
+                result['phone'] = phone
+                result['has_contact_info'] = True
+        
+        # Name extraction - look for patterns like "I'm NAME", "My name is NAME", or just "NAME" at start
+        name_patterns = [
+            r"(?:i'?m|my name is|call me|i am)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)*?)(?:\s+and|$|,|\.|!|\?)",
+            r"^([A-Z][a-z]+)(?:\s*,|\s*$)",  # Name at start followed by comma or end
+        ]
+        
+        for pattern in name_patterns:
+            name_match = re.search(pattern, user_message, re.IGNORECASE)
+            if name_match:
+                potential_name = name_match.group(1).strip()
+                # Validate it's likely a name (not email domain, not phone, etc.)
+                if (len(potential_name) >= 2 and 
+                    not re.search(r'[@\d]', potential_name) and
+                    potential_name.lower() not in ['no', 'yes', 'ok', 'okay', 'sure', 'thanks']):
+                    result['name'] = potential_name
+                    result['has_contact_info'] = True
+                    break
+        
+        # Special case: if message looks like "NAME, email, phone" format
+        parts = [part.strip() for part in user_message.split(',')]
+        if len(parts) >= 2:
+            # First part might be name if it doesn't contain @ or numbers
+            first_part = parts[0].strip()
+            if (len(first_part) >= 2 and 
+                not re.search(r'[@\d]', first_part) and
+                first_part.lower() not in ['no', 'yes', 'ok', 'okay', 'sure', 'thanks']):
+                result['name'] = first_part
+                result['has_contact_info'] = True
+        
+        return result
+    
+    def _call_collect_user_info_tool(self, session_id: str, contact_info: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Call the collect_user_info tool.
+        
+        Args:
+            session_id: Session ID
+            contact_info: Extracted contact information
+            
+        Returns:
+            Tool result dictionary
+        """
+        try:
+            from agents.langgraph_agent.tools import collect_user_info
+            
+            # Call the tool using invoke method for LangChain tools
+            result = collect_user_info.invoke({
+                'session_id': session_id,
+                'name': contact_info.get('name'),
+                'email': contact_info.get('email'),
+                'phone': contact_info.get('phone')
+            })
+            
+            return {
+                'tool_name': 'collect_user_info',
+                'result': result,
+                'success': result.get('success', False)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error calling collect_user_info tool: {str(e)}", exc_info=True)
+            return {
+                'tool_name': 'collect_user_info',
+                'result': {'error': str(e), 'success': False},
+                'success': False
+            }
+    
+    def _call_submit_lead_tool(self, session_id: str) -> Dict[str, Any]:
+        """
+        Call the submit_lead tool.
+        
+        Args:
+            session_id: Session ID
+            
+        Returns:
+            Tool result dictionary
+        """
+        try:
+            from agents.langgraph_agent.tools import submit_lead
+            
+            # Call the tool using invoke method for LangChain tools
+            result = submit_lead.invoke({'session_id': session_id})
+            
+            return {
+                'tool_name': 'submit_lead',
+                'result': result,
+                'success': result.get('success', False)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error calling submit_lead tool: {str(e)}", exc_info=True)
+            return {
+                'tool_name': 'submit_lead',
+                'result': {'error': str(e), 'success': False},
+                'success': False
+            }
+    
+    def _should_submit_lead(self, state: AgentState) -> bool:
+        """
+        Check if we should submit the lead (all info collected and confirmed).
+        
+        Args:
+            state: Current agent state
+            
+        Returns:
+            True if should submit lead
+        """
+        # Check if we have all required info and user confirmed
+        return (state.user_name and 
+                state.user_email and 
+                state.user_phone and 
+                state.step == 'confirmation')
+    
+    def _update_state_with_tool_result(self, state: AgentState, tool_result: Dict[str, Any]) -> AgentState:
+        """
+        Update agent state with tool execution results.
+        
+        Args:
+            state: Current agent state
+            tool_result: Tool execution result
+            
+        Returns:
+            Updated agent state
+        """
+        try:
+            tool_name = tool_result.get('tool_name')
+            result = tool_result.get('result', {})
+            
+            if tool_name == 'collect_user_info' and result.get('success'):
+                # Update state with collected info
+                collected = result.get('collected', {})
+                if collected.get('name'):
+                    state.user_name = collected['name']
+                if collected.get('email'):
+                    state.user_email = collected['email']
+                if collected.get('phone'):
+                    state.user_phone = collected['phone']
+                
+                # Update step based on what we have
+                if state.user_name and state.user_email and state.user_phone:
+                    state.step = 'confirmation'
+                elif state.user_name and state.user_email:
+                    state.step = 'phone'
+                elif state.user_name:
+                    state.step = 'email'
+                else:
+                    state.step = 'name'
+            
+            elif tool_name == 'submit_lead' and result.get('success'):
+                state.step = 'complete'
+                state.is_complete = True
+            
+            # Store tool result for reference
+            state.tool_result = tool_result
+            
+            return state
+            
+        except Exception as e:
+            logger.error(f"Error updating state with tool result: {str(e)}", exc_info=True)
+            return state

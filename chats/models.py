@@ -10,8 +10,24 @@ class Visitor(models.Model):
     Each visitor can have multiple sessions.
     """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False, help_text="Unique visitor identifier")
-    created_at = models.DateTimeField(auto_now_add=True)
+    
+    # IP-based identity fields
+    ip_address = models.GenericIPAddressField(
+        unique=True, 
+        db_index=True,
+        null=True,  # Temporarily allow null for migration
+        blank=True,
+        help_text="IP address for visitor identification"
+    )
     last_seen_at = models.DateTimeField(auto_now=True, help_text="Last time visitor was active")
+    
+    # Persistent user profile fields
+    name = models.CharField(max_length=100, blank=True, null=True, help_text="User's name")
+    email = models.EmailField(blank=True, null=True, help_text="User's email address")
+    phone = models.CharField(max_length=20, blank=True, null=True, help_text="User's phone number")
+    
+    # Existing fields
+    created_at = models.DateTimeField(auto_now_add=True)
     metadata = models.JSONField(default=dict, blank=True, help_text="Browser info, IP, etc.")
     
     class Meta:
@@ -19,6 +35,8 @@ class Visitor(models.Model):
         verbose_name_plural = "Visitors"
         ordering = ['-created_at']
         indexes = [
+            models.Index(fields=['ip_address']),
+            models.Index(fields=['last_seen_at']),
             models.Index(fields=['created_at']),
         ]
     
@@ -39,6 +57,11 @@ class Session(models.Model):
     The id field (UUID) serves as the session identifier.
     Each session is associated with a visitor (auto-created if not provided).
     """
+    class Status(models.TextChoices):
+        ACTIVE = 'ACTIVE', 'Active'
+        SNOOZED = 'SNOOZED', 'Snoozed'
+        INACTIVE = 'INACTIVE', 'Inactive'
+    
     CONVERSATION_TYPE_CHOICES = [
         ('sales', 'Sales'),
         ('support', 'Support'),
@@ -55,6 +78,13 @@ class Session(models.Model):
         help_text="Visitor this session belongs to (auto-created if not provided)",
         null=False,
         blank=False
+    )
+    status = models.CharField(
+        max_length=10,
+        choices=Status.choices,
+        default=Status.ACTIVE,
+        db_index=True,
+        help_text="Session lifecycle status"
     )
     external_user_id = models.CharField(max_length=255, null=True, blank=True, db_index=True, help_text="Third-party user ID")
     conversation_type = models.CharField(
@@ -85,25 +115,33 @@ class Session(models.Model):
             models.Index(fields=['external_user_id']),
             models.Index(fields=['is_active']),
             models.Index(fields=['conversation_type']),
+            models.Index(fields=['status']),
+            models.Index(fields=['visitor', 'status']),
+            models.Index(fields=['status', 'created_at']),
         ]
     
     def __str__(self):
         return f"Session {self.id}"
     
     def save(self, *args, **kwargs):
-        """Set default expiration to 24 hours if not provided."""
+        """Set default expiration to 24 hours if not provided and sync status fields."""
         if not self.expires_at:
             self.expires_at = timezone.now() + timezone.timedelta(hours=24)
         # Ensure conversation_type has a default value
         if not self.conversation_type:
             self.conversation_type = 'routing'
+        
+        # Sync is_active and status fields for backward compatibility
+        if not self.is_active and self.status == self.Status.ACTIVE:
+            # If is_active is False but status is still ACTIVE, mark as INACTIVE
+            self.status = self.Status.INACTIVE
+        elif self.is_active and self.status == self.Status.INACTIVE:
+            # If is_active is True but status is INACTIVE, mark as ACTIVE
+            self.status = self.Status.ACTIVE
+        
         super().save(*args, **kwargs)
     
-    def is_expired(self):
-        """Check if session has expired."""
-        if self.expires_at is None:
-            return False  # Session never expires if expires_at is None
-        return timezone.now() > self.expires_at
+
 
 
 class ChatMessage(models.Model):

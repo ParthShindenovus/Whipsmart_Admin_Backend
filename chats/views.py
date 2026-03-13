@@ -129,11 +129,13 @@ def validate_session(session_id):
     except (Session.DoesNotExist, ValueError):
         return None, error_response('Session not found', status_code=status.HTTP_404_NOT_FOUND)
     
+    # Check session status - INACTIVE sessions are not accessible
+    if session.status == Session.Status.INACTIVE:
+        return None, error_response('Session has expired', status_code=status.HTTP_403_FORBIDDEN)
+    
+    # For backward compatibility, also check is_active field
     if not session.is_active:
         return None, error_response('Session is not active', status_code=status.HTTP_403_FORBIDDEN)
-    
-    if session.is_expired():
-        return None, error_response('Session has expired', status_code=status.HTTP_403_FORBIDDEN)
     
     return session, None
 
@@ -168,8 +170,8 @@ def validate_session(session_id):
         tags=['Sessions'],
     ),
     create=extend_schema(
-        summary="Create new chat session (STEP 2)",
-        description="Create a new chat session. visitor_id is REQUIRED - must be created first via POST /api/chats/visitors/. Session ID will be auto-generated. No user_id required.",
+        summary="Create new chat session (STEP 1 or 2)",
+        description="Create a new chat session. visitor_id is OPTIONAL - if not provided, visitor will be automatically resolved from client IP address. If visitor_id is provided, it must exist (create via POST /api/chats/visitors/ first). Session ID will be auto-generated. No user_id required. Always creates a new session, even if visitor has existing active sessions.",
         tags=['Sessions'],
     ),
     retrieve=extend_schema(
@@ -189,10 +191,15 @@ class SessionViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
     """
     ViewSet for Session model.
     
-    Manages chat sessions. visitor_id is REQUIRED - must be created first via POST /api/chats/visitors/.
+    Manages chat sessions. visitor_id is OPTIONAL - if not provided, visitor will be automatically 
+    resolved from client IP address. If visitor_id is provided, it must exist (create via POST /api/chats/visitors/ first).
     Sessions are independent and do not require admin authentication or user_id.
     
-    FLOW:
+    SIMPLIFIED FLOW:
+    1. POST /api/chats/sessions/ to create session (visitor resolved automatically from IP)
+    2. Use session_id to send chat messages
+    
+    TRADITIONAL FLOW (still supported):
     1. POST /api/chats/visitors/ to create visitor (returns visitor_id)
     2. POST /api/chats/sessions/ with visitor_id to create session (returns session_id)
     3. Use session_id and visitor_id to send chat messages
@@ -200,6 +207,8 @@ class SessionViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
     Provides CRUD operations: Create, Read, Delete, List.
     
     Features:
+    - Automatic IP-based visitor resolution
+    - Always creates new sessions (no reuse of existing sessions)
     - Pagination: Use 'page' and 'page_size' query parameters
     - Filtering: Filter by visitor_id, is_active, external_user_id
     """
@@ -218,8 +227,15 @@ class SessionViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
         """
         Filter sessions by visitor_id if provided in query parameters.
         Supports both 'visitor_id' and 'visitor' query parameters.
+        Excludes INACTIVE sessions and orders by most recent activity.
         """
         queryset = super().get_queryset()
+        
+        # Filter out INACTIVE sessions - only show ACTIVE and SNOOZED sessions
+        queryset = queryset.exclude(status=Session.Status.INACTIVE)
+        
+        # Order by most recent activity (last_message_at)
+        queryset = queryset.order_by('-last_message_at', '-created_at')
         
         # Support visitor_id query parameter
         visitor_id = self.request.query_params.get('visitor_id')
@@ -263,8 +279,44 @@ class SessionViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
         """
         Create a new session with initial Whip-E AI greeting message.
         Optimized for fast session creation - uses bulk operations and avoids extra queries.
+        
+        If visitor_id is not provided, automatically resolves visitor from client IP address.
+        This provides backward compatibility and simplifies frontend integration.
         """
-        serializer = self.get_serializer(data=request.data or {})
+        # Get request data - handle both DRF Request and raw Django request
+        if hasattr(request, 'data'):
+            request_data = request.data or {}
+        else:
+            # Fallback for raw Django request (mainly for testing)
+            request_data = {}
+        
+        # If visitor_id is not provided, resolve from IP address
+        if 'visitor_id' not in request_data or not request_data['visitor_id']:
+            from chats.ip_resolver import IPResolver
+            from chats.session_manager import SessionManager
+            
+            try:
+                # Extract client IP and resolve visitor
+                client_ip = IPResolver.extract_client_ip(request)
+                visitor = IPResolver.get_or_create_visitor_from_ip(client_ip)
+                
+                # Always create a new session - do not return existing sessions
+                # This ensures each API call creates a fresh chat session
+                
+                # Add resolved visitor_id to request data
+                request_data = request_data.copy()
+                request_data['visitor_id'] = str(visitor.id)
+                
+                logger.info(f"[SESSION_CREATE] Auto-resolved visitor {visitor.id} from IP {client_ip}")
+                
+            except Exception as e:
+                logger.error(f"[SESSION_CREATE] Error resolving visitor from IP: {str(e)}", exc_info=True)
+                return error_response(
+                    f"Failed to resolve visitor from IP address: {str(e)}",
+                    status_code=status.HTTP_400_BAD_REQUEST
+                )
+        
+        serializer = self.get_serializer(data=request_data)
         serializer.is_valid(raise_exception=True)
         session = serializer.save()
         
@@ -274,27 +326,37 @@ class SessionViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
         from django.utils import timezone
         from django.db import transaction
         
-        initial_greeting = get_full_alex_greeting()
-        now = timezone.now()
-        
-        # Use bulk_create to avoid triggering individual save() methods (much faster)
-        # Then update session's last_message in a single operation
-        with transaction.atomic():
-            ChatMessage.objects.bulk_create([
-                ChatMessage(
-                    session=session,
-                    message=initial_greeting,
-                    role='assistant',
-                    metadata={},
-                    timestamp=now
-                )
-            ], ignore_conflicts=False)
+        try:
+            initial_greeting = get_full_alex_greeting()
+            now = timezone.now()
             
-            # Update session's last_message in a single optimized operation
-            Session.objects.filter(id=session.id).update(
-                last_message=initial_greeting[:500],
-                last_message_at=now
-            )
+            logger.info(f"[SESSION_CREATE] Creating initial greeting message for session {session.id}")
+            
+            # Use bulk_create to avoid triggering individual save() methods (much faster)
+            # Then update session's last_message in a single operation
+            with transaction.atomic():
+                ChatMessage.objects.bulk_create([
+                    ChatMessage(
+                        session=session,
+                        message=initial_greeting,
+                        role='assistant',
+                        metadata={},
+                        timestamp=now
+                    )
+                ], ignore_conflicts=False)
+                
+                # Update session's last_message in a single optimized operation
+                Session.objects.filter(id=session.id).update(
+                    last_message=initial_greeting[:500],
+                    last_message_at=now
+                )
+            
+            logger.info(f"[SESSION_CREATE] Successfully created initial greeting message for session {session.id}")
+            
+        except Exception as e:
+            logger.error(f"[SESSION_CREATE] Failed to create initial greeting message for session {session.id}: {str(e)}", exc_info=True)
+            # Don't fail the session creation if greeting message fails
+            pass
         
         return success_response(
             serializer.data,
@@ -648,7 +710,13 @@ class ChatMessageViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
                 status_code=status.HTTP_403_FORBIDDEN
             )
         
-        # Check if session is already complete (locked)
+        # Check if session is accessible (not INACTIVE and is_active)
+        if session.status == Session.Status.INACTIVE:
+            return error_response(
+                "This conversation has expired. Please start a new session.",
+                status_code=status.HTTP_403_FORBIDDEN
+            )
+        
         if not session.is_active:
             return error_response(
                 "This conversation has been completed. Please start a new session.",
@@ -661,20 +729,28 @@ class ChatMessageViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
             logger.info(f"[MSG] User Message: {message}")
             logger.info("=" * 80)
             
-            # Save user message to database
-            session_manager.save_user_message(session_id, message)
-            
             # Determine which agent to use based on settings
             use_langgraph = getattr(settings, 'USE_LANGGRAPH_AGENT', True)
             
             if use_langgraph:
-                # Use new LangGraph agent
+                # Use new LangGraph agent (handles message saving internally)
                 result = ChatAPIIntegration.process_message(str(session.id), message)
             else:
-                # Use old UnifiedAgent (fallback)
+                # Use old UnifiedAgent (fallback) - needs manual message saving
                 from agents.unified_agent import UnifiedAgent
+                
+                # Save user message to database for old agent
+                session_manager.save_user_message(session_id, message)
+                
                 agent = UnifiedAgent(session)
                 result = agent.handle_message(message)
+                
+                # Save assistant message to database for old agent
+                session_manager.save_assistant_message(
+                    session_id, 
+                    result['message'],
+                    metadata=result.get('metadata', {})
+                )
             
             assistant_message_text = result['message']  # Already post-processed (follow-up phrases removed)
             
@@ -682,12 +758,8 @@ class ChatMessageViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
             followup_type = result.get('followup_type', '')  # 'name_request', 'team_connection', 'explore_more', or ''
             followup_message = result.get('followup_message', '')
             
-            # Save the post-processed assistant message to database (follow-up phrases already removed)
-            session_manager.save_assistant_message(
-                session_id, 
-                assistant_message_text,
-                metadata=result.get('metadata', {})
-            )
+            # For LangGraph agent, messages are already saved internally
+            # For old UnifiedAgent, messages were saved above
             
             # Refresh session to get updated conversation_data and is_active status
             session.refresh_from_db()

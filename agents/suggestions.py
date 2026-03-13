@@ -82,6 +82,43 @@ RESPOND WITH JSON ONLY:
 If no relevant suggestions can be generated, return: {{"suggestions": []}}
 """
 
+RAG_RELATED_QUESTIONS_PROMPT = """You are generating related follow-up questions based on a user's question and the knowledge base documents that were used to answer it.
+
+User's Original Question:
+{user_question}
+
+Bot's Answer:
+{bot_answer}
+
+Knowledge Base Documents Used:
+{rag_documents}
+
+INSTRUCTIONS:
+1. Generate 3-4 related questions that users might naturally want to ask next
+2. Base questions on the CONTENT and TOPICS found in the knowledge base documents
+3. Questions should be:
+   - Directly related to the topics covered in the documents
+   - Natural follow-ups to the user's original question
+   - Short and clear (max 12 words each)
+   - Specific to WhipSmart's services and the document content
+4. Focus on related aspects mentioned in the documents but not fully covered in the bot's answer
+5. Include one conversion-focused suggestion like "Connect with our team" if appropriate
+6. Avoid repeating the exact same question the user just asked
+
+EXAMPLES:
+- If user asked about "novated lease benefits" and docs mention tax savings, FBT exemption, salary sacrifice:
+  ["How much can I save on tax?", "What is FBT exemption?", "How does salary sacrifice work?", "Connect with our team"]
+- If user asked about "EV eligibility" and docs mention specific models, price caps, luxury car tax:
+  ["What EVs are under the price cap?", "How does luxury car tax work?", "What about Tesla models?", "Get a personalized quote"]
+
+RESPOND WITH JSON ONLY:
+{{
+    "related_questions": ["question 1", "question 2", "question 3"]
+}}
+
+If no related questions can be generated, return: {{"related_questions": []}}
+"""
+
 
 def generate_suggestions(conversation_messages, last_bot_message=None, max_suggestions=5):
     """

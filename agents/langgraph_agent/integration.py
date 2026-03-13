@@ -6,6 +6,8 @@ import logging
 from typing import Dict, Any, Optional
 from django.conf import settings
 from chats.models import Session, ChatMessage
+from chats.ip_resolver import IPResolver
+from chats.session_manager import SessionManager
 from agents.langgraph_agent.agent import LangGraphAgent
 
 logger = logging.getLogger(__name__)
@@ -43,8 +45,14 @@ class ChatAPIIntegration:
             if not session.is_active:
                 raise ValueError("Session is not active")
             
-            if session.is_expired():
+            if session.status == Session.Status.INACTIVE:
                 raise ValueError("Session has expired")
+            
+            # If session is SNOOZED, reactivate it when user sends a message
+            if session.status == Session.Status.SNOOZED:
+                session.status = Session.Status.ACTIVE
+                session.save(update_fields=['status'])
+                logger.info(f"[INTEGRATION] Reactivated SNOOZED session: {session_id}")
             
             # Create agent
             agent = LangGraphAgent(session)
@@ -80,7 +88,7 @@ class ChatAPIIntegration:
             return {
                 'session_id': str(session.id),
                 'is_active': session.is_active,
-                'is_expired': session.is_expired(),
+                'is_inactive': session.status == Session.Status.INACTIVE,
                 'conversation_data': session.conversation_data or {},
                 'message_count': ChatMessage.objects.filter(
                     session=session,
@@ -162,7 +170,7 @@ class ChatAPIIntegration:
     def collect_user_info(session_id: str, name: Optional[str] = None,
                          email: Optional[str] = None, phone: Optional[str] = None) -> Dict[str, Any]:
         """
-        Collect and store user information.
+        Collect and store user information on the Visitor model.
         
         Args:
             session_id: The session ID (UUID)
@@ -175,32 +183,101 @@ class ChatAPIIntegration:
         """
         try:
             session = Session.objects.get(id=session_id)
+            visitor = session.visitor
             
-            conversation_data = session.conversation_data or {}
-            
+            # Store profile data on Visitor model instead of session
             if name:
-                conversation_data['name'] = name
+                visitor.name = name
             if email:
-                conversation_data['email'] = email
+                visitor.email = email
             if phone:
-                conversation_data['phone'] = phone
+                visitor.phone = phone
             
-            session.conversation_data = conversation_data
-            session.save(update_fields=['conversation_data'])
+            # Save visitor with updated profile data
+            update_fields = []
+            if name:
+                update_fields.append('name')
+            if email:
+                update_fields.append('email')
+            if phone:
+                update_fields.append('phone')
             
-            logger.info(f"[INTEGRATION] User info collected for session {session_id}")
+            if update_fields:
+                visitor.save(update_fields=update_fields)
+            
+            logger.info(f"[INTEGRATION] User info collected for visitor {visitor.id} in session {session_id}")
             
             return {
                 'success': True,
                 'collected': {
-                    'name': conversation_data.get('name'),
-                    'email': conversation_data.get('email'),
-                    'phone': conversation_data.get('phone')
+                    'name': visitor.name,
+                    'email': visitor.email,
+                    'phone': visitor.phone
                 }
             }
         except Session.DoesNotExist:
             logger.error(f"[INTEGRATION] Session not found: {session_id}")
             raise
+    
+    @staticmethod
+    def create_session_for_ip(request_or_scope, is_websocket: bool = False) -> Dict[str, Any]:
+        """
+        Create a new session for a visitor resolved from IP address.
+        
+        Args:
+            request_or_scope: Django request object or WebSocket scope
+            is_websocket: Whether this is a WebSocket request
+            
+        Returns:
+            Dictionary with session information
+        """
+        try:
+            # Extract IP and resolve visitor
+            if is_websocket:
+                client_ip = IPResolver.extract_websocket_ip(request_or_scope)
+            else:
+                client_ip = IPResolver.extract_client_ip(request_or_scope)
+            
+            visitor = IPResolver.get_or_create_visitor_from_ip(client_ip)
+            
+            # Check for existing active session first
+            existing_session = SessionManager.get_active_session(visitor)
+            if existing_session:
+                logger.info(f"[INTEGRATION] Found existing active session {existing_session.id} for visitor {visitor.id} (IP: {client_ip})")
+                return {
+                    'success': True,
+                    'session_id': str(existing_session.id),
+                    'visitor_id': str(visitor.id),
+                    'visitor_profile': {
+                        'name': visitor.name,
+                        'email': visitor.email,
+                        'phone': visitor.phone
+                    },
+                    'existing_session': True
+                }
+            
+            # Create new session using SessionManager
+            session = SessionManager.create_session(visitor)
+            
+            logger.info(f"[INTEGRATION] Created session {session.id} for visitor {visitor.id} (IP: {client_ip})")
+            
+            return {
+                'success': True,
+                'session_id': str(session.id),
+                'visitor_id': str(visitor.id),
+                'visitor_profile': {
+                    'name': visitor.name,
+                    'email': visitor.email,
+                    'phone': visitor.phone
+                },
+                'existing_session': False
+            }
+        except Exception as e:
+            logger.error(f"[INTEGRATION] Error creating session: {str(e)}", exc_info=True)
+            return {
+                'success': False,
+                'error': str(e)
+            }
 
 
 class RESTAPIAdapter:
@@ -210,26 +287,53 @@ class RESTAPIAdapter:
     """
     
     @staticmethod
-    def handle_chat_request(session_id: str, visitor_id: str, message: str) -> Dict[str, Any]:
+    def create_session(request) -> Dict[str, Any]:
         """
-        Handle REST API chat request.
+        Create a new session for REST API with IP-based visitor resolution.
         
         Args:
+            request: Django request object (for IP extraction)
+            
+        Returns:
+            Formatted response with session information
+        """
+        return ChatAPIIntegration.create_session_for_ip(request, is_websocket=False)
+    
+    @staticmethod
+    def handle_chat_request(request, session_id: str, message: str) -> Dict[str, Any]:
+        """
+        Handle REST API chat request with IP-based visitor resolution.
+        
+        Args:
+            request: Django request object (for IP extraction)
             session_id: The session ID
-            visitor_id: The visitor ID
             message: The user's message
             
         Returns:
             Formatted response for REST API
         """
         try:
-            # Validate session and visitor
+            # Extract client IP and resolve visitor
+            client_ip = IPResolver.extract_client_ip(request)
+            visitor = IPResolver.get_or_create_visitor_from_ip(client_ip)
+            
+            # Get session and validate it belongs to the resolved visitor
             session = Session.objects.get(id=session_id)
             
-            if str(session.visitor.id) != str(visitor_id):
+            if session.visitor.id != visitor.id:
                 return {
                     'success': False,
-                    'error': f"Visitor ID '{visitor_id}' does not match session's visitor"
+                    'error': f"Session does not belong to the visitor resolved from IP {client_ip}"
+                }
+            
+            # Ensure session is active - reactivate if snoozed
+            if session.status == Session.Status.SNOOZED:
+                SessionManager.reactivate_session(session)
+                logger.info(f"[REST_API] Reactivated snoozed session {session_id}")
+            elif session.status == Session.Status.INACTIVE:
+                return {
+                    'success': False,
+                    'error': "Session is inactive and cannot be used"
                 }
             
             # Process message
@@ -243,7 +347,12 @@ class RESTAPIAdapter:
                 'suggestions': response.get('suggestions', []),
                 'complete': response.get('complete', False),
                 'knowledge_results': response.get('knowledge_results', []),
-                'metadata': response.get('metadata', {})
+                'metadata': response.get('metadata', {}),
+                'visitor_profile': {
+                    'name': visitor.name,
+                    'email': visitor.email,
+                    'phone': visitor.phone
+                }
             }
         except Exception as e:
             logger.error(f"[REST_API] Error handling chat request: {str(e)}", exc_info=True)
@@ -260,26 +369,53 @@ class WebSocketAdapter:
     """
     
     @staticmethod
-    def handle_websocket_message(session_id: str, visitor_id: str, message: str) -> Dict[str, Any]:
+    def create_session(scope) -> Dict[str, Any]:
         """
-        Handle WebSocket message.
+        Create a new session for WebSocket with IP-based visitor resolution.
         
         Args:
+            scope: WebSocket scope (for IP extraction)
+            
+        Returns:
+            Formatted response with session information
+        """
+        return ChatAPIIntegration.create_session_for_ip(scope, is_websocket=True)
+    
+    @staticmethod
+    def handle_websocket_message(scope, session_id: str, message: str) -> Dict[str, Any]:
+        """
+        Handle WebSocket message with IP-based visitor resolution.
+        
+        Args:
+            scope: WebSocket scope (for IP extraction)
             session_id: The session ID
-            visitor_id: The visitor ID
             message: The user's message
             
         Returns:
             Formatted response for WebSocket
         """
         try:
-            # Validate session and visitor
+            # Extract client IP and resolve visitor
+            client_ip = IPResolver.extract_websocket_ip(scope)
+            visitor = IPResolver.get_or_create_visitor_from_ip(client_ip)
+            
+            # Get session and validate it belongs to the resolved visitor
             session = Session.objects.get(id=session_id)
             
-            if str(session.visitor.id) != str(visitor_id):
+            if session.visitor.id != visitor.id:
                 return {
                     'type': 'error',
-                    'error': f"Visitor ID '{visitor_id}' does not match session's visitor"
+                    'error': f"Session does not belong to the visitor resolved from IP {client_ip}"
+                }
+            
+            # Ensure session is active - reactivate if snoozed
+            if session.status == Session.Status.SNOOZED:
+                SessionManager.reactivate_session(session)
+                logger.info(f"[WEBSOCKET] Reactivated snoozed session {session_id}")
+            elif session.status == Session.Status.INACTIVE:
+                return {
+                    'type': 'error',
+                    'error': "Session is inactive and cannot be used"
                 }
             
             # Process message
@@ -293,7 +429,12 @@ class WebSocketAdapter:
                 'suggestions': response.get('suggestions', []),
                 'complete': response.get('complete', False),
                 'knowledge_results': response.get('knowledge_results', []),
-                'metadata': response.get('metadata', {})
+                'metadata': response.get('metadata', {}),
+                'visitor_profile': {
+                    'name': visitor.name,
+                    'email': visitor.email,
+                    'phone': visitor.phone
+                }
             }
         except Exception as e:
             logger.error(f"[WEBSOCKET] Error handling message: {str(e)}", exc_info=True)

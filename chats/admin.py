@@ -5,11 +5,26 @@ from .models import Session, ChatMessage, Visitor, MessageSuggestion
 @admin.register(Visitor)
 class VisitorAdmin(admin.ModelAdmin):
     """Admin interface for Visitor model."""
-    list_display = ['id', 'created_at', 'last_seen_at', 'session_count']
+    list_display = ['id', 'ip_address', 'name', 'email', 'phone', 'created_at', 'last_seen_at', 'session_count']
     list_filter = ['created_at', 'last_seen_at']
-    search_fields = ['id']
+    search_fields = ['id', 'ip_address', 'name', 'email', 'phone']
     readonly_fields = ['id', 'created_at', 'last_seen_at']
     date_hierarchy = 'created_at'
+    fieldsets = (
+        ('Identity', {
+            'fields': ('id', 'ip_address')
+        }),
+        ('Profile Information', {
+            'fields': ('name', 'email', 'phone')
+        }),
+        ('Timestamps', {
+            'fields': ('created_at', 'last_seen_at')
+        }),
+        ('Metadata', {
+            'fields': ('metadata',),
+            'classes': ('collapse',)
+        })
+    )
     
     def session_count(self, obj):
         return obj.sessions.count()
@@ -19,17 +34,17 @@ class VisitorAdmin(admin.ModelAdmin):
 @admin.register(Session)
 class SessionAdmin(admin.ModelAdmin):
     """Admin interface for Session model."""
-    list_display = ['id', 'visitor', 'external_user_id', 'is_active', 'expires_at', 'created_at', 'is_expired']
-    list_filter = ['is_active', 'expires_at', 'created_at', 'visitor']
+    list_display = ['id', 'visitor', 'external_user_id', 'is_active', 'status', 'expires_at', 'created_at', 'is_inactive']
+    list_filter = ['is_active', 'status', 'expires_at', 'created_at', 'visitor']
     search_fields = ['id', 'external_user_id', 'visitor__id']
     readonly_fields = ['id', 'created_at']
     date_hierarchy = 'created_at'
     raw_id_fields = ['visitor']
     
-    def is_expired(self, obj):
-        return obj.is_expired()
-    is_expired.boolean = True
-    is_expired.short_description = 'Expired'
+    def is_inactive(self, obj):
+        return obj.status == obj.Status.INACTIVE
+    is_inactive.boolean = True
+    is_inactive.short_description = 'Inactive'
 
 
 class MessageSuggestionInline(admin.TabularInline):

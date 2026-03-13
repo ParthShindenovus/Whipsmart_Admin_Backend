@@ -111,7 +111,7 @@ def search_vehicles(filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
 def collect_user_info(session_id: str, name: Optional[str] = None, 
                      email: Optional[str] = None, phone: Optional[str] = None) -> Dict[str, Any]:
     """
-    Extract and store user information (name, email, phone).
+    Extract and store user information (name, email, phone) on the Visitor model.
     
     Args:
         session_id: The session ID
@@ -124,27 +124,43 @@ def collect_user_info(session_id: str, name: Optional[str] = None,
     """
     try:
         session = Session.objects.get(id=session_id)
-        conversation_data = session.conversation_data or {}
+        visitor = session.visitor
         
-        # Extract and store information
+        # Store profile data on Visitor model instead of session
+        update_fields = []
         if name:
-            conversation_data['name'] = name
+            visitor.name = name
+            update_fields.append('name')
         if email:
-            conversation_data['email'] = email
+            visitor.email = email
+            update_fields.append('email')
         if phone:
-            conversation_data['phone'] = phone
+            visitor.phone = phone
+            update_fields.append('phone')
         
-        # Save to session
-        session.conversation_data = conversation_data
-        session.save(update_fields=['conversation_data'])
+        # Save visitor profile data
+        if update_fields:
+            visitor.save(update_fields=update_fields)
+        
+        # Remove profile data from session.conversation_data if it exists
+        conversation_data = session.conversation_data or {}
+        profile_fields_removed = []
+        for field in ['name', 'email', 'phone']:
+            if field in conversation_data:
+                del conversation_data[field]
+                profile_fields_removed.append(field)
+        
+        if profile_fields_removed:
+            session.conversation_data = conversation_data
+            session.save(update_fields=['conversation_data'])
         
         # Trigger HubSpot contact creation/update if we have email or phone
         if email or phone:
             try:
                 contact_data = {
-                    'email': email or conversation_data.get('email'),
-                    'phone': phone or conversation_data.get('phone'),
-                    'firstname': name or conversation_data.get('name', '').split()[0] if conversation_data.get('name') else '',
+                    'email': email or visitor.email,
+                    'phone': phone or visitor.phone,
+                    'firstname': name or (visitor.name.split()[0] if visitor.name else ''),
                 }
                 
                 if contact_data.get('email') or contact_data.get('phone'):
@@ -158,9 +174,9 @@ def collect_user_info(session_id: str, name: Optional[str] = None,
         return {
             "success": True,
             "collected": {
-                "name": conversation_data.get('name'),
-                "email": conversation_data.get('email'),
-                "phone": conversation_data.get('phone')
+                "name": visitor.name,
+                "email": visitor.email,
+                "phone": visitor.phone
             }
         }
     except Exception as e:
@@ -171,7 +187,7 @@ def collect_user_info(session_id: str, name: Optional[str] = None,
 @tool
 def update_user_info(session_id: str, field: str, value: str) -> Dict[str, Any]:
     """
-    Update a specific user information field.
+    Update a specific user information field on the Visitor model.
     
     Args:
         session_id: The session ID
@@ -186,11 +202,18 @@ def update_user_info(session_id: str, field: str, value: str) -> Dict[str, Any]:
             return {"error": f"Invalid field: {field}", "success": False}
         
         session = Session.objects.get(id=session_id)
-        conversation_data = session.conversation_data or {}
+        visitor = session.visitor
         
-        conversation_data[field] = value
-        session.conversation_data = conversation_data
-        session.save(update_fields=['conversation_data'])
+        # Update the field on the Visitor model
+        setattr(visitor, field, value)
+        visitor.save(update_fields=[field])
+        
+        # Remove the field from session.conversation_data if it exists
+        conversation_data = session.conversation_data or {}
+        if field in conversation_data:
+            del conversation_data[field]
+            session.conversation_data = conversation_data
+            session.save(update_fields=['conversation_data'])
         
         return {
             "success": True,
@@ -206,6 +229,7 @@ def update_user_info(session_id: str, field: str, value: str) -> Dict[str, Any]:
 def submit_lead(session_id: str) -> Dict[str, Any]:
     """
     Submit the lead to HubSpot when all information is collected.
+    Gets profile data from the Visitor model.
     
     Args:
         session_id: The session ID
@@ -215,11 +239,12 @@ def submit_lead(session_id: str) -> Dict[str, Any]:
     """
     try:
         session = Session.objects.get(id=session_id)
-        conversation_data = session.conversation_data or {}
+        visitor = session.visitor
         
-        name = conversation_data.get('name', '')
-        email = conversation_data.get('email', '')
-        phone = conversation_data.get('phone', '')
+        # Get profile data from Visitor model
+        name = visitor.name or ''
+        email = visitor.email or ''
+        phone = visitor.phone or ''
         
         if not (name and email and phone):
             return {
@@ -238,6 +263,7 @@ def submit_lead(session_id: str) -> Dict[str, Any]:
         create_contact(contact_data)
         
         # Mark session as complete
+        conversation_data = session.conversation_data or {}
         conversation_data['step'] = 'complete'
         session.conversation_data = conversation_data
         session.is_active = False

@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'drf_spectacular',
     'channels',
+    'django_q',
     
     # Local apps
     'core',
@@ -467,6 +468,30 @@ CACHES = {
 #         'LOCATION': config('REDIS_URL', default='redis://127.0.0.1:6379/1'),
 #     }
 # }
+
+# Django-Q Configuration
+Q_CLUSTER = {
+    'name': 'whipsmart_session_tasks',
+    'workers': 2,  # Number of worker processes
+    'recycle': 500,  # Recycle worker after this many tasks
+    'timeout': 300,  # Task timeout in seconds (5 minutes)
+    'compress': True,  # Compress task data
+    'save_limit': 250,  # Keep this many successful tasks in database
+    'queue_limit': 500,  # Maximum tasks in queue
+    'cpu_affinity': 1,  # CPU affinity for workers
+    'label': 'Session Lifecycle Tasks',
+    
+    # Use Django ORM as broker (for development)
+    'orm': 'default',  # Use Django database as broker instead of Redis
+    
+    # Task retry configuration
+    'retry': 3600,  # Retry failed tasks after 1 hour
+    'max_attempts': 3,  # Maximum retry attempts
+    
+    # Logging
+    'catch_up': True,  # Catch up on missed scheduled tasks
+    'sync': False,  # Set to True for synchronous execution (testing only)
+}
 
 # Channels Configuration
 ASGI_APPLICATION = 'whipsmart_admin.asgi.application'

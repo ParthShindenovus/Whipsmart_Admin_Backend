@@ -9,49 +9,13 @@ class VisitorSerializer(serializers.ModelSerializer):
     Serializer for Visitor model.
     
     Visitor IDs are auto-generated UUIDs. No input required from client.
-    Includes name, email, and phone from the visitor's most recent session if available.
+    Includes name, email, and phone fields directly from the visitor model.
     """
-    name = serializers.SerializerMethodField(help_text="Visitor's name from most recent session (if available)")
-    email = serializers.SerializerMethodField(help_text="Visitor's email from most recent session (if available)")
-    phone = serializers.SerializerMethodField(help_text="Visitor's phone number from most recent session (if available)")
     
     class Meta:
         model = Visitor
-        fields = ['id', 'created_at', 'last_seen_at', 'metadata', 'name', 'email', 'phone']
-        read_only_fields = ['id', 'created_at', 'last_seen_at', 'name', 'email', 'phone']
-    
-    def get_name(self, obj):
-        """Extract name from the visitor's most recent session's conversation_data."""
-        try:
-            # Get the most recent session for this visitor
-            session = obj.sessions.order_by('-created_at').first()
-            if session and session.conversation_data:
-                return session.conversation_data.get('name', None)
-        except Exception:
-            pass
-        return None
-    
-    def get_email(self, obj):
-        """Extract email from the visitor's most recent session's conversation_data."""
-        try:
-            # Get the most recent session for this visitor
-            session = obj.sessions.order_by('-created_at').first()
-            if session and session.conversation_data:
-                return session.conversation_data.get('email', None)
-        except Exception:
-            pass
-        return None
-    
-    def get_phone(self, obj):
-        """Extract phone from the visitor's most recent session's conversation_data."""
-        try:
-            # Get the most recent session for this visitor
-            session = obj.sessions.order_by('-created_at').first()
-            if session and session.conversation_data:
-                return session.conversation_data.get('phone', None)
-        except Exception:
-            pass
-        return None
+        fields = ['id', 'ip_address', 'name', 'email', 'phone', 'created_at', 'last_seen_at', 'metadata']
+        read_only_fields = ['id', 'created_at', 'last_seen_at']
 
 
 class ChatRequestSerializer(serializers.Serializer):
@@ -82,9 +46,9 @@ class SessionSerializer(serializers.ModelSerializer):
     expires_at is optional (auto-generated if not provided).
     """
     visitor_id = serializers.UUIDField(
-        required=True,
+        required=False,
         write_only=True,
-        help_text="Visitor ID (REQUIRED). Must be created first via POST /api/chats/visitors/"
+        help_text="Visitor ID (optional). If not provided, visitor will be resolved from client IP address."
     )
     visitor = VisitorSerializer(read_only=True, help_text="Visitor details (read-only)")
     expires_at = serializers.DateTimeField(required=False, allow_null=True, help_text="Expiration time (optional, defaults to 24h from now)")
@@ -111,6 +75,10 @@ class SessionSerializer(serializers.ModelSerializer):
     
     def validate_visitor_id(self, value):
         """Validate that visitor exists - optimized with select_related."""
+        if value is None:
+            # visitor_id is optional - will be resolved by the view
+            return value
+            
         try:
             # Use exists() for faster validation (doesn't load full object)
             if not Visitor.objects.filter(id=value).exists():
@@ -127,14 +95,21 @@ class SessionSerializer(serializers.ModelSerializer):
         """
         Create session - optimized for performance.
         - id (UUID) is auto-generated as primary key
-        - visitor_id is REQUIRED and must exist (validated in validate_visitor_id)
+        - visitor_id is optional - if not provided, it should be resolved by the view
         - expires_at will be set by model's save() method if not provided
         - conversation_data defaults to empty dict if not provided
         """
-        visitor_id = validated_data.pop('visitor_id')
-        # Use only() to fetch only needed fields for better performance
-        visitor = Visitor.objects.only('id').get(id=visitor_id)
-        validated_data['visitor'] = visitor
+        visitor_id = validated_data.pop('visitor_id', None)
+        
+        if visitor_id:
+            # Use only() to fetch only needed fields for better performance
+            visitor = Visitor.objects.only('id').get(id=visitor_id)
+            validated_data['visitor'] = visitor
+        else:
+            # This should not happen if the view properly resolves visitor_id
+            raise serializers.ValidationError(
+                "visitor_id is required. This should be resolved automatically from IP address."
+            )
         
         # Ensure conversation_data has a default value
         if 'conversation_data' not in validated_data:

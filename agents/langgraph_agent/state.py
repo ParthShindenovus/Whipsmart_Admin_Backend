@@ -20,6 +20,9 @@ class AgentState:
     user_email: Optional[str] = None
     user_phone: Optional[str] = None
     
+    # Visitor profile data (persistent across sessions)
+    visitor_profile: Dict[str, Any] = field(default_factory=dict)
+    
     # Conversation state
     step: str = "chatting"  # chatting, name, email, phone, confirmation, complete
     
@@ -61,6 +64,7 @@ class AgentState:
             'user_name': self.user_name,
             'user_email': self.user_email,
             'user_phone': self.user_phone,
+            'visitor_profile': self.visitor_profile,
             'step': self.step,
             'tool_result': self.tool_result,
             'next_action': self.next_action,
@@ -104,6 +108,7 @@ class AgentState:
             user_name=data.get('user_name'),
             user_email=data.get('user_email'),
             user_phone=data.get('user_phone'),
+            visitor_profile=data.get('visitor_profile', {}),
             step=data.get('step', 'chatting'),
             tool_result=data.get('tool_result'),
             next_action=data.get('next_action'),

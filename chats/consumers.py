@@ -50,14 +50,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
     
     # Idle timeout constants (in seconds)
     IDLE_WARNING_TIMEOUT = 120  # 2 minutes - send "Are you there?" message
-    IDLE_SESSION_END_TIMEOUT = 240  # 4 minutes total - end session
+    IDLE_SNOOZE_TIMEOUT = 240  # 4 minutes total - snooze session (don't end it)
     
     def format_message(self, message_type, **kwargs):
         """
         Format a standardized WebSocket message.
         
         Args:
-            message_type: One of 'chunk', 'complete', 'idle_warning', 'team_connection_offer', 'session_end', 'error', 'connected'
+            message_type: One of 'chunk', 'complete', 'idle_warning', 'team_connection_offer', 'session_snooze', 'session_end', 'error', 'connected'
             **kwargs: Additional fields to include in the message
         
         Returns:
@@ -97,37 +97,36 @@ class ChatConsumer(AsyncWebsocketConsumer):
         """Handle WebSocket connection."""
         self.session_id = None
         self.visitor_id = None
+        self.visitor = None
         self.session = None
         self.session_complete = False  # Track if session is complete
         
-        # Extract query parameters from WebSocket URL if provided
-        query_string = self.scope.get('query_string', b'').decode('utf-8')
-        if query_string:
-            from urllib.parse import parse_qs
-            params = parse_qs(query_string)
-            self.session_id = params.get('session_id', [None])[0]
-            self.visitor_id = params.get('visitor_id', [None])[0]
-            if self.session_id:
-                logger.info(f"[WEBSOCKET] Connection with session_id: {self.session_id}")
-            if self.visitor_id:
-                logger.info(f"[WEBSOCKET] Connection with visitor_id: {self.visitor_id}")
-        
-        # Accept the connection
+        # Accept the connection first
         await self.accept()
         logger.info("[WEBSOCKET] Client connected")
         
-        # Validate session and visitor if provided
-        if self.session_id and self.visitor_id:
-            validation = await self.validate_session_and_visitor(self.session_id, self.visitor_id)
-            if not validation.get('valid'):
-                error_message = validation.get('error', 'Validation failed')
-                logger.warning(f"[WEBSOCKET] Validation failed: {error_message}")
-                await self.send_error(error_message)
-                await self.close()
-                return
+        try:
+            # Extract client IP from WebSocket headers
+            from .ip_resolver import IPResolver
+            from .session_manager import SessionManager
             
-            # Store validated session
-            self.session = validation.get('session')
+            client_ip = await database_sync_to_async(IPResolver.extract_websocket_ip)(self.scope)
+            logger.info(f"[WEBSOCKET] Extracted client IP: {client_ip}")
+            
+            # Resolve visitor using IPResolver.get_or_create_visitor_from_ip()
+            self.visitor = await database_sync_to_async(IPResolver.get_or_create_visitor_from_ip)(client_ip)
+            self.visitor_id = str(self.visitor.id)
+            logger.info(f"[WEBSOCKET] Resolved visitor: {self.visitor_id}")
+            
+            # Get or create session using SessionManager
+            self.session = await database_sync_to_async(SessionManager.get_active_session)(self.visitor)
+            if not self.session:
+                self.session = await database_sync_to_async(SessionManager.create_session)(self.visitor)
+                logger.info(f"[WEBSOCKET] Created new session: {self.session.id}")
+            else:
+                logger.info(f"[WEBSOCKET] Using existing active session: {self.session.id}")
+            
+            self.session_id = str(self.session.id)
             
             # Register this connection (allow multiple connections per session)
             connection_key = (self.session_id, self.visitor_id)
@@ -181,23 +180,22 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     'connected',
                     message=None,
                     conversation_data=conversation_data,
-                    metadata={'status': 'connected', 'reused_connection': connection_key in _session_idle_state}
+                    metadata={'status': 'connected', 'visitor_id': self.visitor_id, 'session_id': self.session_id}
                 )
             except Exception:
                 connected_message = self.format_message(
                     'connected',
                     message=None,
-                    metadata={'status': 'connected'}
+                    metadata={'status': 'connected', 'visitor_id': self.visitor_id, 'session_id': self.session_id}
                 )
-        else:
-            connected_message = self.format_message(
-                'connected',
-                session_id=None,
-                message=None,
-                metadata={'status': 'connected', 'warning': 'No session_id provided'}
-            )
-        
-        await self.send(text_data=json.dumps(connected_message))
+            
+            await self.send(text_data=json.dumps(connected_message))
+            
+        except Exception as e:
+            logger.error(f"[WEBSOCKET] Error during connection setup: {str(e)}", exc_info=True)
+            error_message = f"Connection setup failed: {str(e)}"
+            await self.send_error(error_message)
+            await self.close()
     
     async def disconnect(self, close_code):
         """Handle WebSocket disconnection."""
@@ -283,9 +281,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         Expected message format:
         {
             "type": "chat_message",
-            "message": "user message text",
-            "session_id": "uuid",
-            "visitor_id": "uuid"
+            "message": "user message text"
         }
         """
         # Update shared idle timer on any message and restart monitoring
@@ -334,51 +330,43 @@ class ChatConsumer(AsyncWebsocketConsumer):
     async def handle_chat_message(self, data):
         """Handle chat message and stream response."""
         message = data.get('message')
-        session_id = data.get('session_id')
-        visitor_id = data.get('visitor_id')
         
         # Validate required fields
         if not message:
             await self.send_error("message is required")
             return
         
-        if not session_id:
-            await self.send_error("session_id is required")
+        # Ensure we have visitor and session from connection setup
+        if not self.visitor or not self.session:
+            await self.send_error("Connection not properly initialized")
             return
-        
-        if not visitor_id:
-            await self.send_error("visitor_id is required")
-            return
-        
-        # Validate session and visitor
-        validation_result = await self.validate_session_and_visitor(session_id, visitor_id)
-        if not validation_result['valid']:
-            await self.send_error(validation_result['error'])
-            return
-        
-        session = validation_result['session']
-        visitor = validation_result['visitor']
         
         # Store session reference for idle timeout
-        self.session = session
+        self.session = self.session
         
         # Reset idle warning flag when user sends a message
         self.idle_warning_sent = False
         
         try:
             logger.info("=" * 80)
-            logger.info(f"[WEBSOCKET] CHAT MESSAGE - Session: {session_id}")
+            logger.info(f"[WEBSOCKET] CHAT MESSAGE - Session: {self.session_id}")
             logger.info(f"[MSG] User Message: {message}")
             logger.info("=" * 80)
             
-            # Save user message to database
-            await self.save_user_message(session_id, message)
+            # Get user message ID for response (will be created by the agent)
+            # For LangGraph agent, user message will be saved internally
+            # For old agent, we need to save it manually
+            use_langgraph = getattr(settings, 'USE_LANGGRAPH_AGENT', True)
             
-            # Get user message ID
-            user_message = await self.get_last_user_message(session_id)
+            if not use_langgraph:
+                # Save user message to database for old agent
+                await self.save_user_message(self.session_id, message)
+            
+            # Get user message (either just saved or will be saved by agent)
+            user_message = await self.get_last_user_message(self.session_id) if not use_langgraph else None
             
             # Process message and stream response
-            await self.process_and_stream_response(session, message, user_message_obj=user_message)
+            await self.process_and_stream_response(self.session, message, user_message_obj=user_message)
             
             # Update shared idle timer after processing message and restart monitoring
             if self.session_id and self.visitor_id:
@@ -421,17 +409,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
             if not session.is_active:
                 return {'valid': False, 'error': 'Session is not active'}
             
-            # Check if session is expired (wrap in try-except in case method fails)
-            def check_expired():
-                return session.is_expired()
-            
-            try:
-                is_expired = await database_sync_to_async(check_expired)()
-                if is_expired:
-                    return {'valid': False, 'error': 'Session has expired'}
-            except Exception as e:
-                logger.warning(f"[WEBSOCKET] Error checking session expiration: {str(e)}")
-                # Continue validation if expiration check fails
+            # Check if session is inactive (expired)
+            if session.status == Session.Status.INACTIVE:
+                return {'valid': False, 'error': 'Session has expired'}
             
             # Get visitor - session.visitor is already loaded via select_related
             visitor = session.visitor
@@ -491,17 +471,29 @@ class ChatConsumer(AsyncWebsocketConsumer):
             use_langgraph = getattr(settings, 'USE_LANGGRAPH_AGENT', True)
             
             if use_langgraph:
-                # Use new LangGraph agent
+                # Use new LangGraph agent (handles message saving internally)
                 from agents.langgraph_agent.integration import ChatAPIIntegration
                 result = await database_sync_to_async(ChatAPIIntegration.process_message)(
                     str(session.id),
                     user_message_text
                 )
+                
+                # Get the user message that was saved by the agent
+                user_message_obj = await self.get_last_user_message(str(session.id))
             else:
-                # Use old UnifiedAgent (fallback)
+                # Use old UnifiedAgent (fallback) - needs manual message saving
                 from agents.unified_agent import UnifiedAgent
                 agent = UnifiedAgent(session)
                 result = await database_sync_to_async(agent.handle_message)(user_message_text)
+                
+                # Save assistant message for old agent
+                await database_sync_to_async(session_manager.save_assistant_message)(
+                    str(session.id),
+                    result.get('message', '').strip(),
+                    metadata=result.get('metadata') or {}
+                )
+                
+                # user_message_obj was already set above for old agent
             
             assistant_message_text = result.get('message', '')  # Already post-processed (follow-up phrases removed)
             
@@ -542,14 +534,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             )
             await self.send(text_data=json.dumps(final_chunk_message))
             
-            # Save complete assistant message to database (same as REST API)
-            # Message is already post-processed (follow-up phrases removed) before saving
-            # Use session_manager to ensure consistency with REST API
-            await database_sync_to_async(session_manager.save_assistant_message)(
-                str(session.id),
-                assistant_message_text.strip(),
-                metadata=result.get('metadata') or {}
-            )
+            # For LangGraph agent, messages are already saved internally
+            # For old UnifiedAgent, assistant message was saved above
             
             # Update session's last_message and last_message_at (same as REST API)
             def update_session():
@@ -781,8 +767,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     
                     # Check if still idle after warning
                     if self.last_activity_time == timer_start_time:
-                        # Still no activity - end the session
-                        await self.end_session_idle()
+                        # Still no activity - snooze the session instead of ending it
+                        await self.snooze_session_idle()
                         
         except asyncio.CancelledError:
             # Task was cancelled (user sent a message, connection closed, or session completed)
@@ -895,9 +881,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     # Check if still idle after warning
                     current_activity_time = idle_state['last_activity_time']
                     if current_activity_time == timer_start_time:
-                        # Still no activity - end the session
-                        logger.info(f"[WEBSOCKET] [IDLE_TIMER] Session {session_id} still idle after 4 minutes total - ending session")
-                        await self.end_session_idle_shared(connection_key)
+                        # Still no activity - snooze the session instead of ending it
+                        logger.info(f"[WEBSOCKET] [IDLE_TIMER] Session {session_id} still idle after 4 minutes total - snoozing session")
+                        await self.snooze_session_idle_shared(connection_key)
                     else:
                         logger.info(f"[WEBSOCKET] [IDLE_TIMER] Session {session_id} had activity after warning - timer was reset")
                 else:
@@ -983,31 +969,32 @@ class ChatConsumer(AsyncWebsocketConsumer):
         except Exception as e:
             logger.error(f"[WEBSOCKET] Error sending idle warning: {str(e)}", exc_info=True)
     
-    async def end_session_idle(self):
-        """End session due to idle timeout."""
+    async def snooze_session_idle(self):
+        """Snooze session due to idle timeout (4 minutes)."""
         if not self.session_id or not self.session:
             return
 
         try:
-            # End session message - polite and professional
-            end_message = "I'll end this conversation due to no response from your end for sometime. Please feel free to reach out to us anytime if you want to know more about WhipSmart"
+            # Snooze message - polite and encouraging
+            snooze_message = "I'll pause our conversation for now since you seem to be away. Feel free to continue chatting anytime - I'll be here when you're ready!"
             
-            # Save end message to database using session_manager (same as REST API)
+            # Save snooze message to database using session_manager
             await database_sync_to_async(session_manager.save_assistant_message)(
                 self.session_id,
-                end_message,
-                metadata={'type': 'session_end', 'reason': 'idle_timeout'}
+                snooze_message,
+                metadata={'type': 'session_snooze', 'reason': 'idle_timeout'}
             )
             
-            # Update session's last_message and last_message_at, then deactivate
-            def deactivate_session():
+            # Update session status to SNOOZED (keep is_active = True)
+            def snooze_session():
                 self.session.refresh_from_db()
-                self.session.last_message = end_message[:500]  # Truncate for preview
+                self.session.last_message = snooze_message[:500]  # Truncate for preview
                 self.session.last_message_at = timezone.now()
-                self.session.is_active = False
-                self.session.save(update_fields=['last_message', 'last_message_at', 'is_active'])
+                self.session.status = Session.Status.SNOOZED  # Set to SNOOZED
+                # Keep is_active = True - only set to False after 24 hours by periodic tasks
+                self.session.save(update_fields=['last_message', 'last_message_at', 'status'])
             
-            await database_sync_to_async(deactivate_session)()
+            await database_sync_to_async(snooze_session)()
             
             # Get the saved message ID
             assistant_message = await self.get_last_assistant_message(self.session_id)
@@ -1015,90 +1002,91 @@ class ChatConsumer(AsyncWebsocketConsumer):
             # Refresh session to get updated conversation_data
             await database_sync_to_async(self.session.refresh_from_db)()
             
-            # Send session end message with standardized schema
-            end_data = self.format_message(
-                'session_end',
-                message=end_message,
+            # Send session snooze message with standardized schema
+            snooze_data = self.format_message(
+                'session_snooze',
+                message=snooze_message,
                 response_id=str(assistant_message.id) if assistant_message else None,
-                complete=True,
+                complete=False,  # Session is snoozed, not complete
                 conversation_data=self.session.conversation_data,
-                metadata={'type': 'session_end', 'reason': 'idle_timeout', 'timeout_seconds': self.IDLE_SESSION_END_TIMEOUT}
+                metadata={'type': 'session_snooze', 'reason': 'idle_timeout', 'timeout_seconds': self.IDLE_SNOOZE_TIMEOUT}
             )
-            await self.send(text_data=json.dumps(end_data))
+            await self.send(text_data=json.dumps(snooze_data))
             
-            logger.info(f"[WEBSOCKET] Ended session due to idle timeout: {self.session_id}")
+            logger.info(f"[WEBSOCKET] Snoozed session due to idle timeout: {self.session_id}")
             
-            # Close WebSocket connection
+            # Close WebSocket connection (user can reconnect to resume)
             await self.close()
             
         except Exception as e:
-            logger.error(f"[WEBSOCKET] Error ending session: {str(e)}", exc_info=True)
+            logger.error(f"[WEBSOCKET] Error snoozing session: {str(e)}", exc_info=True)
     
-    async def end_session_idle_shared(self, connection_key):
-        """End session due to idle timeout - send to all connections."""
+    async def snooze_session_idle_shared(self, connection_key):
+        """Snooze session due to idle timeout - send to all connections."""
         session_id, visitor_id = connection_key
 
         try:
-            # End session message - polite and professional
-            end_message = "I'll end this conversation due to no response from your end for sometime. Please feel free to reach out to us anytime if you want to know more about WhipSmart"
+            # Snooze message - polite and encouraging
+            snooze_message = "I'll pause our conversation for now since you seem to be away. Feel free to continue chatting anytime - I'll be here when you're ready!"
             
-            # Save end message to database using session_manager (same as REST API)
+            # Save snooze message to database using session_manager
             await database_sync_to_async(session_manager.save_assistant_message)(
                 session_id,
-                end_message,
-                metadata={'type': 'session_end', 'reason': 'idle_timeout'}
+                snooze_message,
+                metadata={'type': 'session_snooze', 'reason': 'idle_timeout'}
             )
             
-            # Update session's last_message and last_message_at, then deactivate
-            def deactivate_session():
+            # Update session status to SNOOZED (keep is_active = True)
+            def snooze_session():
                 try:
                     session = Session.objects.get(id=session_id)
                     session.refresh_from_db()
-                    session.last_message = end_message[:500]  # Truncate for preview
+                    session.last_message = snooze_message[:500]  # Truncate for preview
                     session.last_message_at = timezone.now()
-                    session.is_active = False
-                    session.save(update_fields=['last_message', 'last_message_at', 'is_active'])
+                    session.status = Session.Status.SNOOZED  # Set to SNOOZED
+                    # Keep is_active = True - only set to False after 24 hours by periodic tasks
+                    session.save(update_fields=['last_message', 'last_message_at', 'status'])
                     return session.conversation_data
                 except Session.DoesNotExist:
                     return {}
             
-            conversation_data = await database_sync_to_async(deactivate_session)()
+            conversation_data = await database_sync_to_async(snooze_session)()
             
-            # Mark session as complete in idle state
+            # Mark session as snoozed in idle state
             if connection_key in _session_idle_state:
-                _session_idle_state[connection_key]['session_complete'] = True
+                _session_idle_state[connection_key]['session_snoozed'] = True
             
             # Get the saved message ID
             assistant_message = await self.get_last_assistant_message(session_id)
             
-            # Send session end message to all active connections for this session
+            # Send session snooze message to all active connections for this session
             connections = _active_connections.get(connection_key, [])
             closed_count = 0
             for consumer in connections[:]:  # Copy list to avoid modification during iteration
                 try:
-                    end_data = consumer.format_message(
-                        'session_end',
-                        message=end_message,
+                    snooze_data = consumer.format_message(
+                        'session_snooze',
+                        message=snooze_message,
                         response_id=str(assistant_message.id) if assistant_message else None,
-                        complete=True,
+                        complete=False,  # Session is snoozed, not complete
                         conversation_data=conversation_data,
-                        metadata={'type': 'session_end', 'reason': 'idle_timeout', 'timeout_seconds': self.IDLE_SESSION_END_TIMEOUT}
+                        metadata={'type': 'session_snooze', 'reason': 'idle_timeout', 'timeout_seconds': self.IDLE_SNOOZE_TIMEOUT}
                     )
-                    await consumer.send(text_data=json.dumps(end_data))
+                    await consumer.send(text_data=json.dumps(snooze_data))
                     await consumer.close()
                     closed_count += 1
                 except Exception as e:
-                    logger.warning(f"[WEBSOCKET] Error sending session end to connection: {str(e)}")
+                    logger.warning(f"[WEBSOCKET] Error sending session snooze to connection: {str(e)}")
                     # Remove dead connection
                     try:
                         connections.remove(consumer)
                     except ValueError:
                         pass
             
-            logger.info(f"[WEBSOCKET] Ended session due to idle timeout: {session_id} (closed {closed_count} connections)")
+            logger.info(f"[WEBSOCKET] Snoozed session due to idle timeout: {session_id} (closed {closed_count} connections)")
             
         except Exception as e:
-            logger.error(f"[WEBSOCKET] Error ending session: {str(e)}", exc_info=True)
+            logger.error(f"[WEBSOCKET] Error snoozing session: {str(e)}", exc_info=True)
     
     async def save_assistant_message(self, session_id, message):
         """Save assistant message to database asynchronously."""
