@@ -618,6 +618,26 @@ class ChatConsumer(AsyncWebsocketConsumer):
                         # Session is still active, keep monitoring even if complete=true
                         logger.info(f"[WEBSOCKET] Session still active - idle monitoring continues (complete={is_complete})")
             
+            # Get suggestions from result
+            suggestions = result.get('suggestions', [])
+            
+            # Safety check: Block suggestions ONLY when actively collecting info or asking to connect
+            # Don't block just because needs_info is set - only block when we're actually in the process
+            conversation_data = session.conversation_data or {}
+            collecting_info = conversation_data.get('collecting_user_info', False)
+            needs_info = result.get('needs_info')
+            step = conversation_data.get('step', 'chatting')
+            
+            # Final check before sending - force empty array if conditions are met
+            # Only block if:
+            # 1. We're actively collecting user info (collecting_user_info flag is True)
+            # 2. We have a followup_type that indicates info collection or team connection
+            # 3. We need info AND we're in a step that's actively asking for it (name/email/phone)
+            if (collecting_info or 
+                followup_type in ['request_info', 'ask_to_connect', 'name_request', 'team_connection'] or
+                (needs_info and step in ['name', 'email', 'phone'])):
+                suggestions = []
+            
             # Send final response with standardized schema
             complete_message = self.format_message(
                 'complete',
@@ -627,7 +647,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 conversation_data=session.conversation_data,
                 complete=is_complete,
                 needs_info=result.get('needs_info'),
-                suggestions=result.get('suggestions', []),
+                suggestions=suggestions,
                 metadata=result.get('metadata', {})
             )
             await self.send(text_data=json.dumps(complete_message))
@@ -682,13 +702,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 )
                 await self.send(text_data=json.dumps(followup_final_chunk_message))
                 
-                # Send complete message for follow-up
+                # Send complete message for follow-up (no suggestions for followup messages)
                 followup_complete = self.format_message(
                     'complete',
                     message_id=str(user_message_obj.id) if user_message_obj else None,
                     response_id=str(followup_message_obj.id),
                     message=followup_message,
                     complete=False,
+                    suggestions=[],  # No suggestions for followup messages
                     metadata={'type': followup_type}
                 )
                 await self.send(text_data=json.dumps(followup_complete))
