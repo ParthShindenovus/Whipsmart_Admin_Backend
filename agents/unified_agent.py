@@ -3217,13 +3217,13 @@ If message_type is empty string, message should be null."""
         message_lower = user_message.lower()
         
         if any(word in message_lower for word in ['price', 'cost', 'how much']):
-            return "Pricing depends on your specific needs and vehicle choice."
+            return "**Novated Lease Costs**:\n\nPricing depends on your specific needs and vehicle choice."
         elif any(word in message_lower for word in ['benefit', 'advantage', 'why']):
-            return "Novated leases offer tax savings and convenience."
+            return "**Novated Lease Benefits**:\n\nNovated leases offer tax savings and convenience."
         elif any(word in message_lower for word in ['how', 'process', 'work']):
-            return "The process is straightforward and our team will guide you through it."
+            return "**How Novated Leasing Works**:\n\nThe process is straightforward and our team will guide you through it."
         elif any(word in message_lower for word in ['eligible', 'qualify', 'can i']):
-            return "Most employees are eligible for novated leases."
+            return "**Novated Lease Eligibility**:\n\nMost employees are eligible for novated leases."
         else:
             return ""
     
@@ -3233,35 +3233,35 @@ If message_type is empty string, message should be null."""
         
         # End of lease questions
         if any(phrase in message_lower for phrase in ['end of', 'end of lease', 'lease term', 'lease ends', 'after lease', 'when lease ends']):
-            return "At the end of your novated lease term, you have several flexible options: you can pay the residual value and keep the vehicle, trade it in for a new lease, refinance the residual, or return the vehicle. Our team can walk you through each option and help you choose what works best for your situation."
+            return "**End of Lease Options**:\n\n- Pay the residual value and keep the vehicle\n- Trade it in for a new lease\n- Refinance the residual\n- Return the vehicle\n\nOur team can help you choose what works best for your situation."
         
         # Tax benefits
         elif any(phrase in message_lower for phrase in ['tax benefit', 'tax saving', 'tax advantage', 'save on tax', 'reduce tax']):
-            return "Novated leases offer significant tax benefits by reducing your taxable income. Lease payments and running costs are deducted from your pre-tax salary, which means you pay less income tax. The exact savings depend on your income level and the vehicle you choose."
+            return "**Tax Benefits of Novated Leases**:\n\n- Lease payments and running costs are deducted from your pre-tax salary\n- This reduces your taxable income, meaning you pay less income tax\n- The exact savings depend on your income level and the vehicle you choose"
         
         # Pricing/costs
         elif any(word in message_lower for word in ['price', 'cost', 'how much', 'expensive', 'afford']):
-            return "The cost of a novated lease depends on the vehicle you choose, your salary, and the lease term. Our team can provide you with a personalized quote based on your specific circumstances and help you understand the potential tax savings."
+            return "**Novated Lease Costs**:\n\n- The cost depends on the vehicle you choose\n- Your salary level affects the payment structure\n- The lease term impacts overall costs\n\nOur team can provide you with a personalized quote based on your specific circumstances."
         
         # Benefits
         elif any(word in message_lower for word in ['benefit', 'advantage', 'why', 'good', 'worth']):
-            return "Novated leases offer several key benefits: tax savings through pre-tax deductions, simplified budgeting with one payment covering all vehicle costs, and flexibility at the end of the lease term. Plus, you get to choose the vehicle you want!"
+            return "**Novated Lease Benefits**:\n\n- **Tax Savings**: Lease payments and running costs are deducted from your pre-tax salary\n- **Simplified Budgeting**: One payment covers all vehicle costs\n- **Flexibility**: Options at the end of the lease term\n- **Vehicle Choice**: You select the vehicle that meets your needs"
         
         # Process/how it works
         elif any(word in message_lower for word in ['how', 'process', 'work', 'step', 'apply']):
-            return "The process is straightforward: choose your vehicle, we arrange the lease with your employer, and payments are deducted from your pre-tax salary. Our team handles all the paperwork and ongoing management, making it hassle-free for you."
+            return "**How Novated Leasing Works**:\n\n- Choose your vehicle\n- We arrange the lease with your employer\n- Payments are deducted from your pre-tax salary\n- Our team handles all the paperwork and ongoing management"
         
         # Eligibility
         elif any(word in message_lower for word in ['eligible', 'qualify', 'can i', 'who can', 'requirements']):
-            return "Most employees are eligible for novated leases, regardless of whether you work for a private company, government, or not-for-profit organization. The main requirement is that your employer agrees to participate in the arrangement."
+            return "**Novated Lease Eligibility**:\n\n- Most employees are eligible, including those working for private companies, government, or not-for-profit organizations\n- Main requirement is that your employer agrees to participate\n- Our team can help you check your eligibility"
         
         # Vehicles/EVs
         elif any(word in message_lower for word in ['vehicle', 'car', 'ev', 'electric', 'tesla', 'available']):
-            return "You can choose from a wide range of vehicles, including electric vehicles (EVs) which offer additional tax benefits. Our team can help you explore available options and find the perfect vehicle for your needs and budget."
+            return "**Vehicle Options for Novated Leases**:\n\n- Wide range of vehicles available, including electric vehicles (EVs)\n- EVs offer additional tax benefits\n- Our team can help you explore available options to find the perfect vehicle for your needs and budget"
         
         # Default
         else:
-            return "That's a great question! Our team can provide you with detailed information tailored to your specific situation."
+            return "**Novated Leases**:\n\nNovated leases offer tax benefits, flexible vehicle options, and simplified budgeting. Our team can provide you with detailed information tailored to your specific situation."
 
     
     def _extract_user_info(self, message: str) -> dict:

@@ -946,12 +946,23 @@ class LangGraphAgent:
             return ""
     
     def _get_better_brief_answer(self, user_message: str) -> str:
-        """Generate a structured brief answer (4-5 lines) using LLM for domain questions."""
+        """Generate a structured brief answer (still concise, but more complete) using LLM for domain questions."""
         try:
             # Use LLM to generate a brief, structured answer
             brief_prompt = f"""The user asked: "{user_message}"
 
-Please provide a brief, structured answer (4-5 lines maximum) about novated leases. Keep it concise, professional, and helpful. Focus on the key points without being too detailed.
+Please provide a brief, structured answer that is **concise but complete** about novated leases (aim for 2–3 short paragraphs or 4–8 bullet points). Keep it professional and helpful, and make sure you cover the key options, steps, or considerations so the answer does not feel incomplete.
+
+CRITICAL FORMATTING REQUIREMENTS:
+- Use markdown formatting: **bold** for emphasis, headings for sections
+- Use single \\n for line breaks within content
+- Use \\n\\n (double newline) when transitioning from lists to regular text
+- Use structured bullets with "-" (not "•") for bullet points
+- For nested lists, use exactly 4 spaces for indentation per CommonMark specification
+- Keep answers SHORT - aim for 2-4 key points
+- Use positive, respectful language
+- NEVER use negative language (e.g., "if you can't afford")
+- End naturally after providing information - do NOT add follow-up phrases
 
 Answer:"""
             
@@ -959,54 +970,56 @@ Answer:"""
                 model=self.model,
                 messages=[{"role": "user", "content": brief_prompt}],
                 temperature=0.7,
-                max_tokens=200  # Limit to keep it brief (4-5 lines)
+                # Allow a bit more room so the brief answer can be complete but still not long
+                max_tokens=350
             )
             
             brief_answer = response.choices[0].message.content.strip()
             
-            # Ensure it's not too long (max 5 lines)
+            # Soft guardrail: if the answer is extremely long, trim to a reasonable length
+            # (about 12–14 lines) so it stays "brief" but not cut in half.
             lines = brief_answer.split('\n')
-            if len(lines) > 5:
-                brief_answer = '\n'.join(lines[:5])
+            if len(lines) > 14:
+                brief_answer = '\n'.join(lines[:14])
             
             return brief_answer
             
         except Exception as e:
             logger.error(f"Error generating brief answer with LLM: {str(e)}")
-            # Fallback to template-based answers
+            # Fallback to template-based answers with same formatting structure
             message_lower = user_message.lower()
             
             # Benefits
             if any(word in message_lower for word in ['benefit', 'advantage', 'why', 'good', 'worth', 'provide']):
-                return "Novated leases offer several key benefits:\n• Tax savings through pre-tax deductions\n• Simplified budgeting with one payment covering all vehicle costs\n• Flexibility at the end of the lease term\n• You get to choose the vehicle you want!"
+                return "**Novated Lease Benefits**:\n\n- **Tax Savings**: Lease payments and running costs are deducted from your pre-tax salary\n- **Simplified Budgeting**: One payment covers all vehicle costs\n- **Flexibility**: Options at the end of the lease term\n- **Vehicle Choice**: You select the vehicle that meets your needs"
             
             # Tax benefits
             elif any(phrase in message_lower for phrase in ['tax benefit', 'tax saving', 'tax advantage', 'save on tax', 'reduce tax']):
-                return "Novated leases offer significant tax benefits:\n• Lease payments and running costs are deducted from your pre-tax salary\n• This reduces your taxable income, meaning you pay less income tax\n• The exact savings depend on your income level and the vehicle you choose"
+                return "**Tax Benefits of Novated Leases**:\n\n- Lease payments and running costs are deducted from your pre-tax salary\n- This reduces your taxable income, meaning you pay less income tax\n- The exact savings depend on your income level and the vehicle you choose"
             
             # Pricing/costs
             elif any(word in message_lower for word in ['price', 'cost', 'how much', 'expensive', 'afford']):
-                return "The cost of a novated lease depends on:\n• The vehicle you choose\n• Your salary\n• The lease term\n\nOur team can provide you with a personalized quote based on your specific circumstances."
+                return "**Novated Lease Costs**:\n\n- The cost depends on the vehicle you choose\n- Your salary level affects the payment structure\n- The lease term impacts overall costs\n\nOur team can provide you with a personalized quote based on your specific circumstances."
             
             # Process/how it works
             elif any(word in message_lower for word in ['how', 'process', 'work', 'step', 'apply']):
-                return "The process is straightforward:\n• Choose your vehicle\n• We arrange the lease with your employer\n• Payments are deducted from your pre-tax salary\n• Our team handles all the paperwork and ongoing management"
+                return "**How Novated Leasing Works**:\n\n- Choose your vehicle\n- We arrange the lease with your employer\n- Payments are deducted from your pre-tax salary\n- Our team handles all the paperwork and ongoing management"
             
             # Eligibility
             elif any(word in message_lower for word in ['eligible', 'qualify', 'can i', 'who can', 'requirements']):
-                return "Most employees are eligible for novated leases:\n• Works for private companies, government, or not-for-profit organizations\n• Main requirement is that your employer agrees to participate\n• Our team can help you check your eligibility"
+                return "**Novated Lease Eligibility**:\n\n- Most employees are eligible, including those working for private companies, government, or not-for-profit organizations\n- Main requirement is that your employer agrees to participate\n- Our team can help you check your eligibility"
             
             # Vehicles/EVs
             elif any(word in message_lower for word in ['vehicle', 'car', 'ev', 'electric', 'tesla', 'available']):
-                return "You can choose from a wide range of vehicles:\n• Including electric vehicles (EVs) which offer additional tax benefits\n• Our team can help you explore available options\n• Find the perfect vehicle for your needs and budget"
+                return "**Vehicle Options for Novated Leases**:\n\n- Wide range of vehicles available, including electric vehicles (EVs)\n- EVs offer additional tax benefits\n- Our team can help you explore available options to find the perfect vehicle for your needs and budget"
             
             # End of lease
             elif any(phrase in message_lower for phrase in ['end of', 'end of lease', 'lease term', 'lease ends', 'after lease', 'when lease ends']):
-                return "At the end of your novated lease term, you have several options:\n• Pay the residual value and keep the vehicle\n• Trade it in for a new lease\n• Refinance the residual\n• Return the vehicle\n\nOur team can help you choose what works best for your situation."
+                return "**End of Lease Options**:\n\n- Pay the residual value and keep the vehicle\n- Trade it in for a new lease\n- Refinance the residual\n- Return the vehicle\n\nOur team can help you choose what works best for your situation."
             
             # Default
             else:
-                return "That's a great question! Novated leases offer tax benefits, flexible vehicle options, and simplified budgeting. Our team can provide you with detailed information tailored to your specific situation."
+                return "**Novated Leases**:\n\nNovated leases offer tax benefits, flexible vehicle options, and simplified budgeting. Our team can provide you with detailed information tailored to your specific situation."
 
     
     def _extract_user_info(self, message: str) -> dict:
