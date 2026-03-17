@@ -351,6 +351,7 @@ HUBSPOT_ACCESS_TOKEN = config('HUBSPOT_ACCESS_TOKEN', default='')
 # LangGraph Agent settings
 # Set to True to use the new LangGraph agent instead of UnifiedAgent
 USE_LANGGRAPH_AGENT = config('USE_LANGGRAPH_AGENT', default=True, cast=bool)
+USE_LANGGRAPH_AGENT_V2 = config('USE_LANGGRAPH_AGENT_V2', default=True, cast=bool)  # Enable Agent V2 by default
 
 # LangChain settings (optional)
 LANGCHAIN_TRACING_V2 = config('LANGCHAIN_TRACING_V2', default=False, cast=bool)

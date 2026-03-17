@@ -508,10 +508,22 @@ class ChatConsumer(AsyncWebsocketConsumer):
         """Process message using LangGraph agent and stream response."""
         try:
             # Determine which agent to use based on settings
+            use_agent_v2 = getattr(settings, 'USE_LANGGRAPH_AGENT_V2', True)  # Default to True (V2)
             use_langgraph = getattr(settings, 'USE_LANGGRAPH_AGENT', True)
             
-            if use_langgraph:
-                # Use new LangGraph agent
+            logger.info(f"[WEBSOCKET] Agent selection - V2: {use_agent_v2}, LangGraph: {use_langgraph}")
+            
+            if use_agent_v2:
+                # Use new LangGraph Agent V2
+                logger.info("[WEBSOCKET] ===== USING LANGGRAPH AGENT V2 =====")
+                from agents.langgraph_agent_v2.integration import ChatAPIIntegration
+                result = await database_sync_to_async(ChatAPIIntegration.process_message)(
+                    str(session.id),
+                    user_message_text
+                )
+            elif use_langgraph:
+                # Use LangGraph agent V1
+                logger.info("[WEBSOCKET] Using LangGraph Agent V1")
                 from agents.langgraph_agent.integration import ChatAPIIntegration
                 result = await database_sync_to_async(ChatAPIIntegration.process_message)(
                     str(session.id),
@@ -519,6 +531,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 )
             else:
                 # Use old UnifiedAgent (fallback)
+                logger.info("[WEBSOCKET] Using UnifiedAgent (fallback)")
                 from agents.unified_agent import UnifiedAgent
                 agent = UnifiedAgent(session)
                 result = await database_sync_to_async(agent.handle_message)(user_message_text)
@@ -1042,11 +1055,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
             
             # Update session's last_message and last_message_at, then deactivate
             def deactivate_session():
-                self.session.refresh_from_db()
-                self.session.last_message = end_message[:500]  # Truncate for preview
-                self.session.last_message_at = timezone.now()
-                self.session.is_active = False
-                self.session.save(update_fields=['last_message', 'last_message_at', 'is_active'])
+                # Re-fetch session to avoid relying on in-memory self.session in async context
+                session = Session.objects.get(id=self.session_id)
+                session.refresh_from_db()
+                session.last_message = end_message[:500]  # Truncate for preview
+                session.last_message_at = timezone.now()
+                session.is_active = False
+                session.save(update_fields=['last_message', 'last_message_at', 'is_active'])
+                # Keep self.session in sync if present
+                self.session = session
             
             await database_sync_to_async(deactivate_session)()
             

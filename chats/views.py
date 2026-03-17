@@ -665,13 +665,24 @@ class ChatMessageViewSet(StandardizedResponseMixin, viewsets.ModelViewSet):
             session_manager.save_user_message(session_id, message)
             
             # Determine which agent to use based on settings
+            use_agent_v2 = getattr(settings, 'USE_LANGGRAPH_AGENT_V2', True)  # Default to True (V2)
             use_langgraph = getattr(settings, 'USE_LANGGRAPH_AGENT', True)
             
-            if use_langgraph:
-                # Use new LangGraph agent
+            logger.info(f"[REST_API] Agent selection - V2: {use_agent_v2}, LangGraph: {use_langgraph}")
+            
+            if use_agent_v2:
+                # Use new LangGraph Agent V2
+                logger.info("[REST_API] ===== USING LANGGRAPH AGENT V2 =====")
+                from agents.langgraph_agent_v2.integration import ChatAPIIntegration
+                result = ChatAPIIntegration.process_message(str(session.id), message)
+            elif use_langgraph:
+                # Use LangGraph agent V1
+                logger.info("[REST_API] Using LangGraph Agent V1")
+                from agents.langgraph_agent.integration import ChatAPIIntegration
                 result = ChatAPIIntegration.process_message(str(session.id), message)
             else:
                 # Use old UnifiedAgent (fallback)
+                logger.info("[REST_API] Using UnifiedAgent (fallback)")
                 from agents.unified_agent import UnifiedAgent
                 agent = UnifiedAgent(session)
                 result = agent.handle_message(message)
