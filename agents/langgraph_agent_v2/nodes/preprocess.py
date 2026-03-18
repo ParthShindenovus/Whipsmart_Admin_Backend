@@ -205,7 +205,7 @@ def preprocess_node(state: AgentState) -> AgentState:
     # Parallel execution
     with ThreadPoolExecutor(max_workers=MAX_PARALLEL_WORKERS) as executor:
         intent_future = executor.submit(classify_intent, user_message, conversation_history)
-        force_llm = bool(state.collecting_user_info or state.step in {"name", "email", "phone", "confirmation"})
+        force_llm = bool(state.collecting_user_info or state.step in {"name", "email", "phone", "confirmation", "callback_schedule"})
         contact_future = executor.submit(extract_contact_info, user_message, force_llm)
         context_future = executor.submit(analyze_context, user_message, conversation_history)
         

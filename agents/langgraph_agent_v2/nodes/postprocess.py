@@ -2,6 +2,7 @@
 Postprocessing node - Suggestions and formatting.
 """
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor
 from ..state import AgentState
 from ..config import MAX_PARALLEL_WORKERS, TEAM_CONNECTION_THRESHOLD
@@ -9,25 +10,33 @@ from agents.suggestions import generate_suggestions
 
 logger = logging.getLogger(__name__)
 
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
+_BARE_URL_RE = re.compile(r"(?i)\b(?:https?://|www\.)[^\s<>()\]]+")
+
+
+def _strip_links(text: str) -> str:
+    """
+    Remove URLs from model output. Keeps the visible link text for markdown links.
+    """
+    if not text:
+        return text
+    # Convert markdown links to just their label: [label](url) -> label
+    text = _MD_LINK_RE.sub(r"\1", text)
+    # Remove any remaining bare URLs
+    text = _BARE_URL_RE.sub("", text)
+    # Clean up whitespace introduced by removals
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
 
 def format_response(response: str, rag_context: list) -> str:
     """
-    Format response (add source citations, etc.).
+    Format response (sanitize links, etc.).
     """
-    # Add source citations if RAG context available
-    if rag_context:
-        sources = []
-        for chunk in rag_context[:3]:
-            url = chunk.get("metadata", {}).get("url")
-            if url and url not in sources:
-                sources.append(url)
-        
-        if sources:
-            response += "\n\n**Sources:**\n"
-            for url in sources:
-                response += f"- {url}\n"
-    
-    return response
+    # Intentionally do not append citations/sources to the user-facing response.
+    # Also ensure the response itself contains no links.
+    return _strip_links(response)
 
 
 def postprocess_node(state: AgentState) -> AgentState:
@@ -44,7 +53,7 @@ def postprocess_node(state: AgentState) -> AgentState:
     in_followup_flow = bool(
         state.collecting_user_info
         or state.needs_info
-        or state.step in {"awaiting_team_connection", "name", "email", "phone", "confirmation"}
+        or state.step in {"awaiting_team_connection", "name", "email", "phone", "confirmation", "callback_schedule"}
         or state.awaiting_team_connection_confirm
     )
 
