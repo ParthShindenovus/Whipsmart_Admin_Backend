@@ -63,6 +63,8 @@ class ChatAPIIntegration:
             state.user_name = conversation_data.get('name') or state.user_name or visitor.name
             state.user_email = conversation_data.get('email') or state.user_email or visitor.email
             state.user_phone = conversation_data.get('phone') or state.user_phone or visitor.phone
+            state.callback_preferred_datetime = conversation_data.get('callback_preferred_datetime') or state.callback_preferred_datetime
+            state.callback_timezone = conversation_data.get('callback_timezone') or state.callback_timezone
             state.step = conversation_data.get('step', 'chatting')
 
             # Load counters / flow flags
@@ -100,6 +102,8 @@ class ChatAPIIntegration:
             conversation_data['name'] = final_state.user_name or conversation_data.get('name')
             conversation_data['email'] = final_state.user_email or conversation_data.get('email')
             conversation_data['phone'] = final_state.user_phone or conversation_data.get('phone')
+            conversation_data['callback_preferred_datetime'] = final_state.callback_preferred_datetime or conversation_data.get('callback_preferred_datetime')
+            conversation_data['callback_timezone'] = final_state.callback_timezone or conversation_data.get('callback_timezone')
             conversation_data['step'] = final_state.step
             conversation_data['collecting_user_info'] = final_state.collecting_user_info
             conversation_data['question_count'] = final_state.question_count

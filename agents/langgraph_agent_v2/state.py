@@ -20,7 +20,9 @@ class AgentState:
     user_name: Optional[str] = None
     user_email: Optional[str] = None
     user_phone: Optional[str] = None
-    step: str = "chatting"  # chatting, name, email, phone, confirmation, complete
+    callback_preferred_datetime: Optional[str] = None  # free-text preferred callback date+time
+    callback_timezone: Optional[str] = None  # free-text timezone, e.g. "AEST", "UTC+10"
+    step: str = "chatting"  # chatting, name, email, phone, confirmation, callback_schedule, complete
 
     # Conversation counters / flow control
     question_count: int = 0  # number of user questions/messages (used for team connection offer cadence)
@@ -65,7 +67,7 @@ class AgentState:
     should_ask_for_name: bool = False
     should_offer_team_connection: bool = False
     is_complete: bool = False
-    needs_info: Optional[str] = None  # name, email, phone
+    needs_info: Optional[str] = None  # name, email, phone, callback_schedule
     collecting_user_info: bool = False
     
     # Metadata
@@ -81,6 +83,8 @@ class AgentState:
             'user_name': self.user_name,
             'user_email': self.user_email,
             'user_phone': self.user_phone,
+            'callback_preferred_datetime': self.callback_preferred_datetime,
+            'callback_timezone': self.callback_timezone,
             'step': self.step,
             'question_count': self.question_count,
             'last_team_offer_count': self.last_team_offer_count,
@@ -135,6 +139,8 @@ class AgentState:
             user_name=data.get('user_name'),
             user_email=data.get('user_email'),
             user_phone=data.get('user_phone'),
+            callback_preferred_datetime=data.get('callback_preferred_datetime'),
+            callback_timezone=data.get('callback_timezone'),
             step=data.get('step', 'chatting'),
             question_count=data.get('question_count', 0),
             last_team_offer_count=data.get('last_team_offer_count', 0),
